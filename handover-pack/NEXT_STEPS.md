@@ -6,7 +6,7 @@
 - Repo: `github.com/VeerNXT-ESM/veernxt-clean`, branch `main`. Clean tree, no old history. **Vercel is NOT yet switched to this repo** (it still builds the old one); switch it after the morning check below.
 - `sql/site_banners_video.sql` has been run.
 - In the repo: `README.md`, `.env.example`, `docs/` (master reference, front-end map, security notes, eight interactive diagrams), `graphify-out/` (structural graph of the code), and this `handover-pack/`.
-- Unused images (about 39 MB) are in `VeerNXT Handover\IMAGE_REPOSITORY` for the new team's drive.
+- Unused images and the removed hero video (about 150 MB in total) are in `VeerNXT Handover\IMAGE_REPOSITORY` for the new team's drive.
 
 ## Before switching Vercel (morning check, 2026-11-02)
 1. Run `npm install && npm run dev` from a fresh clone of `veernxt-clean` and click through: landing (light and dark, language switch, videos), login, `/home`, Learning Center, an exam, a book chapter, Jobs (all tabs incl. Private Sector), Finance, Legal, Network, Subscribe (no payment), Admin > Banners tabs. Watch the console and network tab.
