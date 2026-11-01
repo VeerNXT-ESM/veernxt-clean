@@ -2,6 +2,8 @@
 
 **Date:** 2026-10-09 · **Status:** analysis only, nothing changed · **Related:** `CLEANUP_AUDIT.md` (file/asset cleanup), `docs/API_CONTRACT_INVENTORY.md` (call-site inventory and proposed server operations).
 
+> **Status 2026-11-01 (handover).** Still the right roadmap, with updated numbers: direct `.from(...)` calls in `src/` are now 224 (was 205), `LearningCenter.jsx` is about 4,080 lines, `JobBoard.jsx` about 2,460, `FinancialGuidance.jsx` about 2,610, `api/admin/save-resource.js` about 2,290. The plan assumes a Capacitor then Flutter port: if that is not planned, keep only the data-access layer and the business-rules extraction. `docs/API_CONTRACT_INVENTORY.md`, which "Next step" points to, is **not in this repo**; recreate it or drop that step. AI items are moot (no AI in the product).
+
 Goal: make the codebase ready for a Capacitor build now and a React Native / Flutter client later, by moving data access and business rules out of the UI so a new client does not rewrite them.
 
 ## What the code looks like

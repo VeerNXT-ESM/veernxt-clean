@@ -2,6 +2,8 @@
 
 **Date:** 2026-10-09 · **Scope:** every tracked file (708 files) · **Status:** report only — nothing has been deleted or changed.
 
+> **Status 2026-11-01 (handover).** Done: §3 (video on R2), §4 except `schema.sql`, §7 for 9 of 11 packages (`react-pageflip` and `page-flip` are now used by the flipbook reader, so they stay), §10 and §12 (moot: scripts removed, fresh repo with no old history), and all of §1 apart from the `public/thumbnails/*.png` duplicates, which are also moved. About 80 unused files (about 110 MB) now sit outside the repo in the handover team's image repository; `public/veernxt_assets/manifest.json` was moved with them. Not done: §2 (WebP conversion), §5, §6, §8, §9, §11 (SQL), and §13 (the duplicate exam tables, the main database item). Still broken from §2: `LearningCenter.jsx` points at `/thumbnails/General Studies.png`, which does not exist (use the `.webp`). Line counts and file sizes quoted below are from 2026-10-09.
+
 Each item says what to remove or change, why, how much it saves, and how to check it is safe first. Items are ordered by payoff. "Unreferenced" means the file name or symbol does not appear anywhere in `src/`, `api/`, `backend/`, `scripts/` or `index.html` (checked with `git grep` plus an import graph of `src/`).
 
 ## Summary
