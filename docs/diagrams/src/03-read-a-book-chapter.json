@@ -1,0 +1,168 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Reading a book chapter",
+    "output": "03-read-a-book-chapter.html",
+    "quality_profile": "showcase"
+  },
+  "participants": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Reader",
+      "sublabel": "student"
+    },
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "React SPA",
+      "sublabel": "SecureReader.jsx"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "Exams API",
+      "sublabel": "api/exams.js ?fn=chapter"
+    },
+    {
+      "id": "sb",
+      "type": "database",
+      "label": "Supabase",
+      "sublabel": "resources, user_profiles"
+    },
+    {
+      "id": "r2",
+      "type": "cloud",
+      "label": "Cloudflare R2",
+      "sublabel": "chapters/chapter-N.json"
+    }
+  ],
+  "messages": [
+    {
+      "id": "m1",
+      "from": "user",
+      "to": "web",
+      "y": 160,
+      "label": "open a chapter",
+      "variant": "default"
+    },
+    {
+      "id": "m2",
+      "from": "web",
+      "to": "api",
+      "y": 190,
+      "label": "GET fn=chapter, resourceId, chapterIndex",
+      "variant": "emphasis"
+    },
+    {
+      "id": "m3",
+      "from": "api",
+      "to": "sb",
+      "y": 220,
+      "label": "read the resource row",
+      "variant": "default"
+    },
+    {
+      "id": "m4",
+      "from": "sb",
+      "to": "api",
+      "y": 250,
+      "label": "category and storage base",
+      "variant": "return"
+    },
+    {
+      "id": "m5",
+      "from": "api",
+      "to": "sb",
+      "y": 280,
+      "label": "paid category: verify token, read tier",
+      "variant": "security"
+    },
+    {
+      "id": "m6",
+      "from": "sb",
+      "to": "api",
+      "y": 310,
+      "label": "tier and expiry",
+      "variant": "return"
+    },
+    {
+      "id": "m7",
+      "from": "api",
+      "to": "r2",
+      "y": 340,
+      "label": "GET chapter-N.json",
+      "variant": "default"
+    },
+    {
+      "id": "m8",
+      "from": "r2",
+      "to": "api",
+      "y": 370,
+      "label": "chapter blocks",
+      "variant": "return"
+    },
+    {
+      "id": "m9",
+      "from": "api",
+      "to": "web",
+      "y": 400,
+      "label": "200 chapter, or 403 locked",
+      "variant": "return"
+    },
+    {
+      "id": "m10",
+      "from": "web",
+      "to": "user",
+      "y": 430,
+      "label": "render the page",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "web",
+      "from": 155,
+      "to": 438,
+      "type": "frontend"
+    },
+    {
+      "participant": "api",
+      "from": 185,
+      "to": 408,
+      "type": "backend"
+    },
+    {
+      "participant": "sb",
+      "from": 215,
+      "to": 318,
+      "type": "database"
+    },
+    {
+      "participant": "r2",
+      "from": 335,
+      "to": 378,
+      "type": "cloud"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "The gate",
+      "items": [
+        "Precis and PYQ need an active paid subscription",
+        "No token gives 403 locked, a bad token gives 401",
+        "Free categories skip the tier check"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Why a function",
+      "items": [
+        "Chapter files sit in public R2, so the gate lives in this API",
+        "R2 objects are cached 300 s: a re-upload can look stale for five minutes"
+      ]
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # VeerNXT Web: Master Handover Reference
 
-**Compiled:** 2026-10-28 · **Audience:** the incoming engineering team · **Repo:** `veernxt-web` (GitHub `VeerNXT-ESM/veernxt-web`, branch `main`)
+**Compiled:** 2026-10-28 · **Audience:** the incoming engineering team · **Repo:** `veernxt-clean` (GitHub `VeerNXT-ESM/veernxt-clean`, branch `main`). **Also read** `../README.md`, `FRONTEND_MAP.md`, `SECURITY_NOTES.md` and `diagrams/README.md`. Where this document names the old header, `/v2` routes or two Learning Centers, `FRONTEND_MAP.md` is current.
 
 This is the single entry point to the technical handover. It condenses six source documents that sit beside it in `docs/`. Each section names its source for the full detail. Dates inside sections are when the original was written, so check anything time-sensitive against the live system.
 

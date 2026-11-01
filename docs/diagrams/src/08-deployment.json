@@ -1,0 +1,205 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Deployment and secrets",
+    "output": "08-deployment.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "dev",
+      "type": "external",
+      "label": "Developers",
+      "sublabel": "new team",
+      "pos": [
+        40,
+        250
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "gh",
+      "type": "cloud",
+      "label": "GitHub",
+      "sublabel": "VeerNXT-ESM/veernxt-clean",
+      "pos": [
+        250,
+        250
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "tag": "main"
+    },
+    {
+      "id": "vercel",
+      "type": "cloud",
+      "label": "Vercel project",
+      "sublabel": "vite build, Hobby plan",
+      "pos": [
+        490,
+        250
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "tag": "11 of 12 functions"
+    },
+    {
+      "id": "env",
+      "type": "security",
+      "label": "Environment variables",
+      "sublabel": "set in the Vercel project",
+      "pos": [
+        490,
+        90
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "tag": "secrets"
+    },
+    {
+      "id": "domain",
+      "type": "external",
+      "label": "veernxt.in",
+      "sublabel": "DNS and domain",
+      "pos": [
+        730,
+        250
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "sb",
+      "type": "database",
+      "label": "Supabase",
+      "sublabel": "Postgres + Auth",
+      "pos": [
+        730,
+        90
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "r2",
+      "type": "cloud",
+      "label": "Cloudflare R2",
+      "sublabel": "bucket veernxt-resources",
+      "pos": [
+        730,
+        410
+      ],
+      "size": [
+        170,
+        64
+      ]
+    },
+    {
+      "id": "pw",
+      "type": "security",
+      "label": "Password manager",
+      "sublabel": "secret values are shared here",
+      "pos": [
+        250,
+        90
+      ],
+      "size": [
+        170,
+        64
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "push",
+      "from": "dev",
+      "to": "gh",
+      "label": "git push",
+      "variant": "emphasis"
+    },
+    {
+      "id": "deploy",
+      "from": "gh",
+      "to": "vercel",
+      "label": "auto deploy",
+      "variant": "emphasis"
+    },
+    {
+      "id": "serve",
+      "from": "vercel",
+      "to": "domain",
+      "label": "serves"
+    },
+    {
+      "id": "envin",
+      "from": "env",
+      "to": "vercel",
+      "label": "injected at runtime",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "vsb",
+      "from": "vercel",
+      "to": "sb",
+      "label": "API calls",
+      "variant": "dashed"
+    },
+    {
+      "id": "vr2",
+      "from": "vercel",
+      "to": "r2",
+      "label": "API calls",
+      "variant": "dashed"
+    },
+    {
+      "id": "pwenv",
+      "from": "pw",
+      "to": "env",
+      "label": "values entered by hand",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Secrets live in two places",
+      "items": [
+        "Server secrets (service role, R2, MSG91, Razorpay, ADMIN_API_SECRET) sit in Vercel env vars",
+        "Names are in .env.example; real values never go in git"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Anything named VITE_ is public",
+      "items": [
+        "VITE_* values are compiled into the browser bundle",
+        "VITE_ADMIN_API_SECRET is read in the browser: treat it as exposed and move admin auth server-side"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Deploying",
+      "items": [
+        "Production branch: main of veernxt-clean",
+        "A 13th file under api/ breaks every deploy: see VERCEL_FUNCTIONS.md",
+        "Rotate the old keys: the previous repo still holds them"
+      ]
+    }
+  ]
+}

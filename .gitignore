@@ -53,3 +53,8 @@ raw_book_covers/
 public/thumbnails/books/*.png
 /test_*.png
 /test_*.webp
+
+# graphify: machine-specific files and cache (graph.json, graph.html, GRAPH_REPORT.md are kept)
+graphify-out/cache/
+graphify-out/.graphify_python
+graphify-out/.graphify_root

@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "diagram_type": "tree",
+  "meta": {
+    "title": "Site map",
+    "subtitle": "Containment only: each route group belongs to one parent. Links do not show navigation.",
+    "output": "07-site-map.html",
+    "quality_profile": "showcase"
+  },
+  "layout": {
+    "direction": "right"
+  },
+  "nodes": [
+    {
+      "id": "root",
+      "label": "VeerNXT web app",
+      "sublabel": "routes in src/App.jsx"
+    },
+    {
+      "id": "public",
+      "label": "Public",
+      "sublabel": "no login",
+      "parent": "root"
+    },
+    {
+      "id": "public_0",
+      "label": "/",
+      "parent": "public",
+      "sublabel": "landing page (signed out)"
+    },
+    {
+      "id": "public_1",
+      "label": "/login",
+      "parent": "public",
+      "sublabel": "OTP and password"
+    },
+    {
+      "id": "public_2",
+      "label": "/financial-guidance",
+      "parent": "public",
+      "sublabel": "Finance"
+    },
+    {
+      "id": "public_3",
+      "label": "/legal-aid",
+      "parent": "public",
+      "sublabel": "Legal Aid Cell"
+    },
+    {
+      "id": "public_4",
+      "label": "/privacy /support /legal",
+      "parent": "public",
+      "sublabel": "info pages"
+    },
+    {
+      "id": "public_5",
+      "label": "/pay /preview-services",
+      "parent": "public",
+      "sublabel": "payment, finance preview"
+    },
+    {
+      "id": "public_6",
+      "label": "/demo-cards",
+      "parent": "public",
+      "sublabel": "demo only"
+    },
+    {
+      "id": "public_7",
+      "label": "/dev-reader, /profiling-tester",
+      "parent": "public",
+      "sublabel": "dev tools, also public"
+    },
+    {
+      "id": "home",
+      "label": "Signed in: home",
+      "sublabel": "slim header",
+      "parent": "root"
+    },
+    {
+      "id": "home_0",
+      "label": "/home",
+      "parent": "home",
+      "sublabel": "landing for signed-in users"
+    },
+    {
+      "id": "home_1",
+      "label": "/home/me",
+      "parent": "home",
+      "sublabel": "student dashboard"
+    },
+    {
+      "id": "home_2",
+      "label": "/home/messages",
+      "parent": "home",
+      "sublabel": "messages"
+    },
+    {
+      "id": "home_3",
+      "label": "/dashboard",
+      "parent": "home",
+      "sublabel": "same dashboard, older path"
+    },
+    {
+      "id": "learn",
+      "label": "Signed in: Learning",
+      "sublabel": "",
+      "parent": "root"
+    },
+    {
+      "id": "learn_0",
+      "label": "/learning-center",
+      "parent": "learn",
+      "sublabel": "the Learning Center"
+    },
+    {
+      "id": "learn_1",
+      "label": "/exam/:examId",
+      "parent": "learn",
+      "sublabel": "exam syllabus"
+    },
+    {
+      "id": "learn_2",
+      "label": "/study-materials",
+      "parent": "learn",
+      "sublabel": "study material"
+    },
+    {
+      "id": "learn_3",
+      "label": "/quiz-center, /quiz/:id",
+      "parent": "learn",
+      "sublabel": "quizzes"
+    },
+    {
+      "id": "learn_4",
+      "label": "/pyq-center, /pyq-reader/:id",
+      "parent": "learn",
+      "sublabel": "previous year papers"
+    },
+    {
+      "id": "jobs",
+      "label": "Signed in: Jobs and account",
+      "sublabel": "",
+      "parent": "root"
+    },
+    {
+      "id": "jobs_0",
+      "label": "/jobs",
+      "parent": "jobs",
+      "sublabel": "tabs: v2, legacy, Private Sector"
+    },
+    {
+      "id": "jobs_1",
+      "label": "/private-sector/*",
+      "parent": "jobs",
+      "sublabel": "also embedded in /jobs"
+    },
+    {
+      "id": "jobs_2",
+      "label": "/network, /rewards, /cv",
+      "parent": "jobs",
+      "sublabel": "network, points, CV"
+    },
+    {
+      "id": "jobs_3",
+      "label": "/profiling, /profiling/results",
+      "parent": "jobs",
+      "sublabel": "profile and recommendations"
+    },
+    {
+      "id": "jobs_4",
+      "label": "/subscribe",
+      "parent": "jobs",
+      "sublabel": "plans"
+    },
+    {
+      "id": "jobs_5",
+      "label": "/messaging",
+      "parent": "jobs",
+      "sublabel": "still routed, no link"
+    },
+    {
+      "id": "emp",
+      "label": "Employer",
+      "sublabel": "separate header links",
+      "parent": "root"
+    },
+    {
+      "id": "emp_0",
+      "label": "/employer/onboarding",
+      "parent": "emp"
+    },
+    {
+      "id": "emp_1",
+      "label": "/employer/dashboard",
+      "parent": "emp"
+    },
+    {
+      "id": "emp_2",
+      "label": "/employer/post-job",
+      "parent": "emp"
+    },
+    {
+      "id": "emp_3",
+      "label": "/employer/ready-to-hire",
+      "parent": "emp"
+    },
+    {
+      "id": "emp_4",
+      "label": "/find-candidates",
+      "parent": "emp"
+    },
+    {
+      "id": "reader",
+      "label": "Reader",
+      "sublabel": "full screen, no header",
+      "parent": "root"
+    },
+    {
+      "id": "reader_0",
+      "label": "/reader/:id",
+      "parent": "reader",
+      "sublabel": "book reader"
+    },
+    {
+      "id": "admin",
+      "label": "Admin CMS",
+      "sublabel": "/admin, own login",
+      "parent": "root"
+    },
+    {
+      "id": "admin_0",
+      "label": "Learning",
+      "parent": "admin",
+      "sublabel": "Exams, Book Content, Book Covers, Reader Themes, Conducting Bodies, Categories, Subjects, Publish Content"
+    },
+    {
+      "id": "admin_1",
+      "label": "Site",
+      "parent": "admin",
+      "sublabel": "Banners (six tabs)"
+    },
+    {
+      "id": "admin_2",
+      "label": "System",
+      "parent": "admin",
+      "sublabel": "Users, Roles, Admin Profile, Quizzes, PYQ Papers"
+    },
+    {
+      "id": "admin_3",
+      "label": "Operations",
+      "parent": "admin",
+      "sublabel": "Job Board, Rewards, Private Sector, Legal Aid"
+    },
+    {
+      "id": "admin_4",
+      "label": "Editors",
+      "parent": "admin",
+      "sublabel": "quiz, PYQ, book chapters, theme editor"
+    }
+  ]
+}

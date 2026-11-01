@@ -1,0 +1,194 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Content pipeline: Word document to the reader",
+    "output": "06-content-pipeline.html",
+    "quality_profile": "showcase"
+  },
+  "stages": [
+    {
+      "label": "Source"
+    },
+    {
+      "label": "Admin"
+    },
+    {
+      "label": "Process"
+    },
+    {
+      "label": "Store"
+    },
+    {
+      "label": "Serve"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "docx",
+      "type": "external",
+      "label": "Word DOCX",
+      "sublabel": "from the content team",
+      "stage": 0,
+      "row": 1
+    },
+    {
+      "id": "page",
+      "type": "frontend",
+      "label": "Publish Content",
+      "sublabel": "admin page",
+      "stage": 1,
+      "row": 1,
+      "tag": "/admin/publish-content"
+    },
+    {
+      "id": "convert",
+      "type": "backend",
+      "label": "Convert",
+      "sublabel": "docx-preview-convert",
+      "stage": 2,
+      "row": 0,
+      "tag": "mammoth + docxParser"
+    },
+    {
+      "id": "publish",
+      "type": "backend",
+      "label": "Publish",
+      "sublabel": "content-publish",
+      "stage": 2,
+      "row": 1,
+      "tag": "save-resource.js"
+    },
+    {
+      "id": "r2",
+      "type": "cloud",
+      "label": "R2 bucket",
+      "sublabel": "chapters/chapter-N.json",
+      "stage": 3,
+      "row": 0
+    },
+    {
+      "id": "res",
+      "type": "database",
+      "label": "resources",
+      "sublabel": "one row per book",
+      "stage": 3,
+      "row": 1
+    },
+    {
+      "id": "map",
+      "type": "database",
+      "label": "exam links",
+      "sublabel": "lc_exam_resource_map",
+      "stage": 3,
+      "row": 2
+    },
+    {
+      "id": "chap",
+      "type": "backend",
+      "label": "Chapter API",
+      "sublabel": "api/exams ?fn=chapter",
+      "stage": 4,
+      "row": 0
+    },
+    {
+      "id": "reader",
+      "type": "frontend",
+      "label": "Reader",
+      "sublabel": "SecureReader",
+      "stage": 4,
+      "row": 1
+    }
+  ],
+  "flows": [
+    {
+      "id": "f1",
+      "from": "docx",
+      "to": "page",
+      "label": "upload .docx",
+      "variant": "emphasis"
+    },
+    {
+      "id": "f2",
+      "from": "page",
+      "to": "convert",
+      "label": "file, category",
+      "variant": "default"
+    },
+    {
+      "id": "f3",
+      "from": "convert",
+      "to": "page",
+      "label": "preview blocks",
+      "variant": "dashed"
+    },
+    {
+      "id": "f4",
+      "from": "page",
+      "to": "publish",
+      "label": "approved blocks",
+      "variant": "emphasis"
+    },
+    {
+      "id": "f5",
+      "from": "publish",
+      "to": "r2",
+      "label": "chapter JSON",
+      "variant": "default"
+    },
+    {
+      "id": "f6",
+      "from": "publish",
+      "to": "res",
+      "label": "new row",
+      "variant": "default"
+    },
+    {
+      "id": "f7",
+      "from": "page",
+      "to": "map",
+      "label": "link exams (admin Exams)",
+      "variant": "dashed"
+    },
+    {
+      "id": "f8",
+      "from": "r2",
+      "to": "chap",
+      "label": "chapter file",
+      "variant": "default"
+    },
+    {
+      "id": "f9",
+      "from": "chap",
+      "to": "reader",
+      "label": "chapter, if allowed",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "In this repo",
+      "items": [
+        "The Publish Content page converts and publishes one DOCX at a time",
+        "Parser: scripts/lib/docxParser.mjs (headings from Word Heading 1 styles)"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Not in this repo",
+      "items": [
+        "The newer direct parser, verifier and bulk runner stay in the original repo",
+        "50 re-parsed books exist as Draft rows on the live site, not yet swapped in"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Linking",
+      "items": [
+        "A book reaches an exam through lc_exam_resource_map or the legacy exam_name match",
+        "Purging legacy rows before real links exist hides books from those exams"
+      ]
+    }
+  ]
+}

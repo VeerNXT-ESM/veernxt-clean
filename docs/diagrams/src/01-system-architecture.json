@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "VeerNXT: system architecture",
+    "output": "01-system-architecture.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    {
+      "id": "users",
+      "type": "external",
+      "label": "Users",
+      "sublabel": "Candidates, employers, admins",
+      "pos": [
+        40,
+        250
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "spa",
+      "type": "cloud",
+      "label": "React SPA",
+      "sublabel": "Vite build on Vercel",
+      "pos": [
+        270,
+        250
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "tag": "src/"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "Serverless API",
+      "sublabel": "11 functions (limit 12)",
+      "pos": [
+        510,
+        250
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "tag": "api/"
+    },
+    {
+      "id": "engine",
+      "type": "backend",
+      "label": "Recommendation engine",
+      "sublabel": "runs inside recommend.js",
+      "pos": [
+        490,
+        90
+      ],
+      "size": [
+        190,
+        64
+      ],
+      "tag": "backend/engine"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "Supabase",
+      "sublabel": "Postgres + Auth + RLS",
+      "pos": [
+        770,
+        250
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "r2",
+      "type": "cloud",
+      "label": "Cloudflare R2",
+      "sublabel": "chapters, banners, media",
+      "pos": [
+        770,
+        410
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "scraper",
+      "type": "backend",
+      "label": "Job scraper",
+      "sublabel": "Electron app + CLI",
+      "pos": [
+        770,
+        90
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "tag": "scraper-app"
+    },
+    {
+      "id": "razorpay",
+      "type": "external",
+      "label": "Razorpay",
+      "sublabel": "subscriptions",
+      "pos": [
+        410,
+        410
+      ],
+      "size": [
+        140,
+        64
+      ]
+    },
+    {
+      "id": "msg91",
+      "type": "external",
+      "label": "MSG91",
+      "sublabel": "OTP, SMS, WhatsApp",
+      "pos": [
+        250,
+        410
+      ],
+      "size": [
+        140,
+        64
+      ]
+    },
+    {
+      "id": "smtp",
+      "type": "external",
+      "label": "Gmail SMTP",
+      "sublabel": "admin and recruiter email",
+      "pos": [
+        570,
+        410
+      ],
+      "size": [
+        140,
+        64
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Vercel",
+      "wraps": [
+        "spa",
+        "api",
+        "engine"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "users-spa",
+      "from": "users",
+      "to": "spa",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "spa-api",
+      "from": "spa",
+      "to": "api",
+      "label": "/api/*"
+    },
+    {
+      "id": "api-engine",
+      "from": "api",
+      "to": "engine",
+      "label": "profile to exams",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "api-db",
+      "from": "api",
+      "to": "db",
+      "label": "service role"
+    },
+    {
+      "id": "api-r2",
+      "from": "api",
+      "to": "r2",
+      "label": "chapters, uploads",
+      "variant": "dashed"
+    },
+    {
+      "id": "scraper-db",
+      "from": "scraper",
+      "to": "db",
+      "label": "writes jobs",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "api-msg91",
+      "from": "api",
+      "to": "msg91",
+      "label": "OTP",
+      "variant": "dashed"
+    },
+    {
+      "id": "api-razorpay",
+      "from": "api",
+      "to": "razorpay",
+      "label": "payments",
+      "variant": "dashed"
+    },
+    {
+      "id": "api-smtp",
+      "from": "api",
+      "to": "smtp",
+      "label": "email",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Browser to data",
+      "items": [
+        "The SPA also reads Supabase directly with the anon key (RLS applies)",
+        "Banners and book media load from the R2 public URL"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Serverless API",
+      "items": [
+        "Hobby plan: 12 functions max, 11 used",
+        "New endpoints go in api/_lib and a router"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "No AI",
+      "items": [
+        "The site makes no LLM calls",
+        "The chat widget is a scripted FAQ"
+      ]
+    }
+  ]
+}

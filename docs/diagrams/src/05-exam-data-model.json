@@ -1,0 +1,427 @@
+{
+  "schema_version": 1,
+  "diagram_type": "erd",
+  "meta": {
+    "title": "Exam and content data model (live database)",
+    "output": "05-exam-data-model.html",
+    "quality_profile": "showcase"
+  },
+  "layout": {
+    "mode": "grid",
+    "gapY": 38,
+    "gapX": 72
+  },
+  "entities": [
+    {
+      "id": "lc_conducting_bodies",
+      "label": "lc_conducting_bodies",
+      "row": 0,
+      "col": 0,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "name",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "lc_regions",
+      "label": "lc_regions",
+      "row": 1,
+      "col": 0,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "name",
+          "type": "text"
+        },
+        {
+          "name": "level",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "lc_exams",
+      "label": "lc_exams",
+      "row": 1,
+      "col": 1,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "name",
+          "type": "text"
+        },
+        {
+          "name": "category",
+          "type": "text"
+        },
+        {
+          "name": "conducting_body_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "lc_conducting_bodies.id"
+        },
+        {
+          "name": "region_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "lc_regions.id"
+        },
+        {
+          "name": "status",
+          "type": "text"
+        }
+      ],
+      "width": 250
+    },
+    {
+      "id": "exams",
+      "label": "exams",
+      "row": 2,
+      "col": 0,
+      "attributes": [
+        {
+          "name": "exam_id",
+          "type": "varchar",
+          "key": "pk"
+        },
+        {
+          "name": "exam_name",
+          "type": "varchar"
+        },
+        {
+          "name": "subject_requirements",
+          "type": "jsonb"
+        }
+      ],
+      "width": 250
+    },
+    {
+      "id": "lc_exam_legacy_map",
+      "label": "lc_exam_legacy_map",
+      "row": 2,
+      "col": 1,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "lc_exam_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "lc_exams.id"
+        },
+        {
+          "name": "match_method",
+          "type": "text"
+        },
+        {
+          "name": "legacy_exam_id",
+          "type": "text"
+        }
+      ],
+      "width": 250
+    },
+    {
+      "id": "lc_exam_resource_map",
+      "label": "lc_exam_resource_map",
+      "row": 0,
+      "col": 2,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "exam_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "lc_exams.id"
+        },
+        {
+          "name": "resource_id",
+          "type": "text"
+        },
+        {
+          "name": "category",
+          "type": "text"
+        }
+      ],
+      "width": 250
+    },
+    {
+      "id": "lc_exam_quiz_map",
+      "label": "lc_exam_quiz_map",
+      "row": 1,
+      "col": 2,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "exam_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "lc_exams.id"
+        },
+        {
+          "name": "quiz_id",
+          "type": "uuid"
+        },
+        {
+          "name": "source",
+          "type": "text"
+        }
+      ],
+      "width": 250
+    },
+    {
+      "id": "user_exam_targets",
+      "label": "user_exam_targets",
+      "row": 2,
+      "col": 2,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "user_id",
+          "type": "uuid"
+        },
+        {
+          "name": "exam_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "lc_exams.id"
+        },
+        {
+          "name": "is_primary",
+          "type": "boolean"
+        }
+      ],
+      "width": 250
+    },
+    {
+      "id": "resources",
+      "label": "resources",
+      "row": 0,
+      "col": 3,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "resource_id",
+          "type": "varchar",
+          "key": "uk"
+        },
+        {
+          "name": "title",
+          "type": "varchar"
+        },
+        {
+          "name": "category",
+          "type": "varchar"
+        },
+        {
+          "name": "storage_base_url",
+          "type": "varchar"
+        },
+        {
+          "name": "is_locked",
+          "type": "boolean"
+        }
+      ],
+      "width": 260
+    },
+    {
+      "id": "quizzes",
+      "label": "quizzes",
+      "row": 1,
+      "col": 3,
+      "attributes": [
+        {
+          "name": "id",
+          "type": "uuid",
+          "key": "pk"
+        },
+        {
+          "name": "lc_exam_id",
+          "type": "uuid"
+        }
+      ],
+      "width": 260
+    },
+    {
+      "id": "jobs",
+      "label": "jobs",
+      "row": 0,
+      "col": 1,
+      "attributes": [
+        {
+          "name": "job_id",
+          "type": "integer",
+          "key": "pk"
+        },
+        {
+          "name": "lc_exam_id",
+          "type": "uuid",
+          "key": "fk",
+          "references": "lc_exams.id"
+        },
+        {
+          "name": "title",
+          "type": "varchar"
+        },
+        {
+          "name": "last_date",
+          "type": "timestamptz"
+        },
+        {
+          "name": "exam_id",
+          "type": "varchar"
+        }
+      ],
+      "width": 260
+    }
+  ],
+  "relationships": [
+    {
+      "id": "lc_exams_body",
+      "from": "lc_exams",
+      "to": "lc_conducting_bodies",
+      "label": "held by",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "fromOptional": true
+    },
+    {
+      "id": "lc_exams_region",
+      "from": "lc_exams",
+      "to": "lc_regions",
+      "label": "in region",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "fromOptional": true
+    },
+    {
+      "id": "legacy_map",
+      "from": "lc_exam_legacy_map",
+      "to": "lc_exams",
+      "label": "maps to",
+      "fromCardinality": "many",
+      "toCardinality": "one"
+    },
+    {
+      "id": "resource_map",
+      "from": "lc_exam_resource_map",
+      "to": "lc_exams",
+      "label": "links exam",
+      "fromCardinality": "many",
+      "toCardinality": "one"
+    },
+    {
+      "id": "resource_map_res",
+      "from": "lc_exam_resource_map",
+      "to": "resources",
+      "label": "logical join, no FK",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "fromOptional": true
+    },
+    {
+      "id": "quiz_map",
+      "from": "lc_exam_quiz_map",
+      "to": "lc_exams",
+      "label": "links exam",
+      "fromCardinality": "many",
+      "toCardinality": "one"
+    },
+    {
+      "id": "quiz_map_q",
+      "from": "lc_exam_quiz_map",
+      "to": "quizzes",
+      "label": "logical join, no FK",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "fromOptional": true
+    },
+    {
+      "id": "targets",
+      "from": "user_exam_targets",
+      "to": "lc_exams",
+      "label": "user targets",
+      "fromCardinality": "many",
+      "toCardinality": "one"
+    },
+    {
+      "id": "jobs_lc",
+      "from": "jobs",
+      "to": "lc_exams",
+      "label": "matched to",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "fromOptional": true
+    },
+    {
+      "id": "legacy_map_exam",
+      "from": "lc_exam_legacy_map",
+      "to": "exams",
+      "label": "logical join, no FK",
+      "fromCardinality": "many",
+      "toCardinality": "one",
+      "fromOptional": true
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Two exam tables",
+      "items": [
+        "lc_exams is the current table, exams is the legacy one",
+        "lc_exam_legacy_map joins them: legacy_exam_id is plain text, not a key",
+        "jobs carry both exam_id (legacy) and lc_exam_id; the profiling engine still reads exams"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Logical joins",
+      "items": [
+        "resource_id, quiz_id and legacy_exam_id have no foreign key in the database",
+        "Two content tables exist: resources and resources_v2 (same columns)",
+        "Also real but not drawn: exams and quizzes foreign keys to the tables above"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Source of this picture",
+      "items": [
+        "Read from the live API schema on 2026-11-01: columns trimmed to the keys and a few fields",
+        "47 tables and views in total; schema.sql in the repo may be out of date"
+      ]
+    }
+  ]
+}
