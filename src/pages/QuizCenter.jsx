@@ -1,0 +1,371 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { Link, useSearchParams, useLocation } from 'react-router-dom';
+import { supabase } from '../lib/supabase';
+import { Brain, Search, RefreshCw, Lock, ArrowLeft } from 'lucide-react';
+import { getEffectiveTier, canTakeQuiz } from '../lib/subscriptionAccess';
+import { resolveCanonicalSubjectLabel, getFamilyHex } from '../lib/thumbnailTaxonomy';
+import { MIN_PLAYABLE_QUESTIONS } from '../lib/quizQuality';
+
+export default function QuizCenter() {
+  const [quizzes, setQuizzes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [searchText, setSearchText] = useState('');
+  const [profile, setProfile] = useState(null);
+  const [targetExam, setTargetExam] = useState(null);
+  // null = no matched exam yet (fallback: show every subject, unfiltered);
+  // a Set = canonical subject keys required by the user's top-matched exam.
+  const [allowedSubjectKeys, setAllowedSubjectKeys] = useState(null);
+  // null = no lc_exam_quiz_map rows for this exam yet (subject-overlap
+  // fallback below still applies); a Set = the exam has a real, reasoned
+  // mapping (sql/lc_exam_quiz_map.sql, scripts/map_exam_quizzes_gemini.mjs)
+  // and quizzes are restricted to exactly those quiz_ids.
+  const [mappedQuizIds, setMappedQuizIds] = useState(null);
+  // The user's matched exam only *prioritises* quizzes; "Show all quizzes" lets them browse everything.
+  const [showAll, setShowAll] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
+  const activeSubjectKey = searchParams.get('subject');
+  const activeExamId = searchParams.get('exam');
+
+  useEffect(() => {
+    const loadQuizzes = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          const { data: profileRow } = await supabase
+            .from('user_profiles')
+            .select('subscription_tier, subscription_expires_at, free_quiz_used, recommendations')
+            .eq('id', session.user.id)
+            .maybeSingle();
+          if (profileRow) {
+            setProfile(profileRow);
+            // If activeExamId is passed in URL, load that specific exam, else fall back to top recommendation
+            const examIdToLoad = activeExamId || (profileRow.recommendations || [])[0]?.exam_id;
+            if (examIdToLoad) {
+              try {
+                const res = await fetch(`/api/exams?examId=${encodeURIComponent(examIdToLoad)}`);
+                const json = await res.json();
+                if (json.ok && json.exam) {
+                  setTargetExam(json.exam);
+                  const required = Object.entries(json.exam.subjects || {})
+                    .filter(([, v]) => (v || '').toLowerCase() === 'yes')
+                    .map(([k]) => resolveCanonicalSubjectLabel(k)?.key)
+                    .filter(Boolean);
+                  setAllowedSubjectKeys(new Set(required));
+                }
+              } catch (e) {
+                console.error('Error fetching target exam subjects:', e);
+              }
+
+              try {
+                const { data: mapRows } = await supabase
+                  .from('lc_exam_quiz_map')
+                  .select('quiz_id')
+                  .eq('exam_id', examIdToLoad);
+                if (mapRows && mapRows.length > 0) {
+                  setMappedQuizIds(new Set(mapRows.map((r) => r.quiz_id)));
+                } else {
+                  // No curated map yet: mock tests are linked directly to their exam via quizzes.lc_exam_id.
+                  const { data: linked } = await supabase
+                    .from('quizzes')
+                    .select('id')
+                    .eq('lc_exam_id', examIdToLoad)
+                    .eq('category', 'Mock Test');
+                  if (linked && linked.length > 0) setMappedQuizIds(new Set(linked.map((r) => r.id)));
+                }
+              } catch (e) {
+                console.warn('lc_exam_quiz_map query fallback:', e);
+              }
+            }
+          }
+        }
+
+        // PostgREST caps a single response at 1,000 rows and there are ~1,900 mock tests: page through
+        // them all. Quizzes are listed even when few/no questions are playable yet (MIN_PLAYABLE_QUESTIONS = 0).
+        const all = [];
+        for (let from = 0; ; from += 1000) {
+          const { data, error } = await supabase
+            .from('quizzes')
+            .select('*')
+            .eq('category', 'Mock Test')
+            .gte('playable_questions', MIN_PLAYABLE_QUESTIONS)
+            .order('title')
+            .order('id')
+            .range(from, from + 999);
+          if (error) throw error;
+          all.push(...(data || []));
+          if (!data || data.length < 1000) break;
+        }
+        setQuizzes(all);
+      } catch (err) {
+        console.error('Error fetching quizzes:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadQuizzes();
+  }, [activeExamId]);
+
+  const tier = getEffectiveTier(profile?.subscription_tier, profile?.subscription_expires_at);
+  const freeQuizUsed = !!profile?.free_quiz_used;
+  const quizAccess = canTakeQuiz(tier, freeQuizUsed);
+
+  // Group quizzes by canonical subject where possible (regardless of which
+  // exam-match mode below is active — subject grouping is just the browse
+  // structure). Exam-match filtering itself has two tiers:
+  //  1. lc_exam_quiz_map has rows for this exam (mappedQuizIds is a Set) ->
+  //     restrict to exactly those quiz_ids, a real per-exam match.
+  //  2. No mapping rows yet -> fall back to subject-overlap (any quiz whose
+  //     canonical subject the exam's syllabus requires). This barely
+  //     discriminates for common subjects (English/Reasoning/etc. are
+  //     required by nearly every exam) but keeps the page useful pre-rollout.
+  //     A quiz whose subject doesn't match the 17-subject taxonomy at all
+  //     (quizzes.subject is largely untagged/"General" today) is exempt
+  //     from this fallback filter so it isn't hidden outright.
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const quiz of quizzes) {
+      const canonical = resolveCanonicalSubjectLabel(quiz.subject);
+      if (!showAll) {
+        if (mappedQuizIds) {
+          if (!mappedQuizIds.has(quiz.id)) continue;
+        } else if (allowedSubjectKeys && canonical && !allowedSubjectKeys.has(canonical.key)) {
+          continue;
+        }
+      }
+      const key = canonical?.key || quiz.subject || 'uncategorized';
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          label: canonical?.label || quiz.subject || 'Uncategorized',
+          family: canonical?.family || null,
+          quizzes: [],
+        });
+      }
+      map.get(key).quizzes.push(quiz);
+    }
+    return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+  }, [quizzes, allowedSubjectKeys, mappedQuizIds, showAll]);
+
+  const activeGroup = groups.find((g) => g.key === activeSubjectKey) || null;
+
+  const visibleGroups = groups.filter((g) =>
+    g.label.toLowerCase().includes(searchText.toLowerCase())
+  );
+  const visibleQuizzesInGroup = (activeGroup?.quizzes || []).filter((q) =>
+    q.title.toLowerCase().includes(searchText.toLowerCase())
+  );
+
+  const openSubject = (key) => {
+    setSearchText('');
+    setSearchParams(key ? { subject: key } : {});
+  };
+
+  // Top-level search also matches quiz titles (across every visible subject), not just subject folders.
+  const titleMatches = !activeGroup && searchText.trim()
+    ? groups.flatMap((g) => g.quizzes).filter((q) => q.title.toLowerCase().includes(searchText.trim().toLowerCase()))
+    : [];
+
+  const renderQuizCard = (quiz) => {
+      const locked = !quizAccess.allowed;
+      return (
+        <div
+          key={quiz.id}
+          style={{
+            background: 'var(--c-bg-0, white)', border: '1px solid var(--c-line-2, #e2e8f0)', padding: '1.5rem',
+            display: 'flex', flexDirection: 'column', gap: '1rem', position: 'relative'
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+            {locked && (
+              <span style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: '0.2rem', fontSize: '0.7rem', fontWeight: 700 }}>
+                <Lock size={12} /> LOCKED
+              </span>
+            )}
+          </div>
+
+          <div style={{ flex: 1 }}>
+            <h3 style={{ margin: '0 0 0.5rem 0', fontSize: '1.05rem', fontWeight: 800, color: 'var(--ios-text)', lineHeight: 1.3 }}>
+              {quiz.title}
+            </h3>
+            <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--c-ink-4, #64748b)', lineHeight: 1.4 }}>
+              {quiz.description || 'Practice questions curated for examination preparation.'}
+            </p>
+          </div>
+
+          <Link
+            to={`/quiz/${quiz.id}`}
+            style={{
+              textDecoration: 'none', background: 'var(--ios-olive-fill, var(--ios-olive))', color: 'white',
+              textAlign: 'center', padding: '0.75rem', fontWeight: 800, fontSize: '0.85rem',
+              textTransform: 'uppercase', letterSpacing: '0.5px',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem',
+              border: 'none', cursor: 'pointer'
+            }}
+          >
+            Start Arena Session
+          </Link>
+        </div>
+      );
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', background: 'var(--ios-bg, #F4F4F8)', padding: '2rem 1.5rem', fontFamily: "'Inter', sans-serif" }}>
+      <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
+
+        {/* Breadcrumb */}
+        {activeGroup ? (
+          <button
+            onClick={() => openSubject(null)}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '0.4rem', background: 'none', border: 'none',
+              color: 'var(--c-ink-4, #64748b)', fontSize: '0.85rem', fontWeight: 700, marginBottom: '1.5rem', cursor: 'pointer',
+              textTransform: 'uppercase', letterSpacing: '0.5px', padding: 0
+            }}
+          >
+            <ArrowLeft size={14} /> Back to Subjects
+          </button>
+        ) : (
+          <Link
+            to={location.state?.from || "/learning-center"}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '0.4rem', textDecoration: 'none',
+              color: 'var(--c-ink-4, #64748b)', fontSize: '0.85rem', fontWeight: 700, marginBottom: '1.5rem',
+              textTransform: 'uppercase', letterSpacing: '0.5px'
+            }}
+          >
+            <ArrowLeft size={14} /> Back to Library
+          </Link>
+        )}
+
+        {/* Title & Description */}
+        <div style={{ marginBottom: '2.5rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+            <div style={{
+              width: '40px', height: '40px', background: 'rgba(75,107,50,0.08)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center'
+            }}>
+              <Brain size={22} color="var(--ios-olive)" />
+            </div>
+            <h1 style={{ fontSize: '1.8rem', fontWeight: 800, color: 'var(--ios-text)', margin: 0, textTransform: 'uppercase', letterSpacing: '-0.5px' }}>
+              {activeGroup ? activeGroup.label : 'Quiz & Mock Center'}
+            </h1>
+          </div>
+          <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--c-ink-4, #64748b)', fontWeight: 500 }}>
+            {activeGroup
+              ? `Mock tests for ${activeGroup.label}.`
+              : 'Test your competitive exam readiness with custom mock simulations and subject-wise testing.'}
+          </p>
+
+          {targetExam && (
+            <div style={{
+              marginTop: '1rem',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.75rem',
+              background: 'var(--c-tint-green, #eef2e6)',
+              border: '1px solid var(--ios-olive, #4b6b32)',
+              borderRadius: '2px',
+              padding: '0.4rem 1rem',
+              fontSize: '0.8rem',
+              color: 'var(--ios-olive, #4b6b32)',
+              fontWeight: 700,
+            }}>
+              <span>{showAll ? 'Showing all quizzes' : mappedQuizIds ? `🎯 Filtered for: ${targetExam.name}` : `Related subjects for: ${targetExam.name}`}</span>
+              <button
+                type="button"
+                onClick={() => setShowAll((v) => !v)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--c-ink-4, #64748b)',
+                  cursor: 'pointer',
+                  fontSize: '0.75rem',
+                  fontWeight: 700,
+                  textDecoration: 'underline',
+                  padding: 0,
+                }}
+              >
+                {showAll ? `Only ${targetExam.name}` : 'Show all quizzes'}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Search */}
+        <div style={{
+          display: 'flex', gap: '1rem',
+          background: 'var(--c-bg-0, white)', border: '1px solid var(--c-line-2, #e2e8f0)', padding: '1.25rem', marginBottom: '2rem'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', border: '1px solid var(--c-line-2, #e2e8f0)', padding: '0.5rem 0.75rem', flex: 1 }}>
+            <Search size={16} color="#94a3b8" />
+            <input
+              type="text"
+              placeholder={activeGroup ? 'Search mock assessments...' : 'Search subjects or mock tests...'}
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              style={{ border: 'none', outline: 'none', width: '100%', fontSize: '0.85rem', fontWeight: 500 }}
+            />
+          </div>
+        </div>
+
+        {loading ? (
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '4rem' }}>
+            <RefreshCw className="animate-spin" size={24} color="var(--ios-olive)" />
+          </div>
+        ) : !activeGroup ? (
+          /* ---- Subject landing view ---- */
+          visibleGroups.length === 0 && titleMatches.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '4rem 2rem', background: 'var(--c-bg-0, white)', border: '1px solid var(--c-line-2, #e2e8f0)' }}>
+              <Brain size={48} color="#cbd5e1" style={{ marginBottom: '1rem' }} />
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--ios-text)' }}>No Mock Tests Found</h3>
+              <p style={{ color: 'var(--c-ink-4, #64748b)', fontSize: '0.85rem', margin: 0 }}>Try a different search or check back later.</p>
+            </div>
+          ) : (
+            <>
+            {titleMatches.length > 0 && (
+              <div style={{ marginBottom: '2rem' }}>
+                <h3 style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--c-ink-4, #64748b)', textTransform: 'uppercase', letterSpacing: '0.5px', margin: '0 0 0.75rem' }}>
+                  Matching mock tests ({titleMatches.length})
+                </h3>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
+                  {titleMatches.slice(0, 60).map(renderQuizCard)}
+                </div>
+              </div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '1rem' }}>
+              {visibleGroups.map((g) => (
+                <div
+                  key={g.key}
+                  onClick={() => openSubject(g.key)}
+                  style={{
+                    background: 'var(--c-bg-0, white)', border: '1px solid var(--c-line-2, #e2e8f0)', borderTop: `3px solid ${g.family ? getFamilyHex(g.family) : '#cbd5e1'}`,
+                    padding: '1.5rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '0.5rem'
+                  }}
+                >
+                  <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800, color: 'var(--ios-text)' }}>{g.label}</h3>
+                  <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--c-ink-4, #64748b)', fontWeight: 600 }}>
+                    {g.quizzes.length} mock test{g.quizzes.length === 1 ? '' : 's'}
+                  </p>
+                </div>
+              ))}
+            </div>
+            </>
+          )
+        ) : visibleQuizzesInGroup.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '4rem 2rem', background: 'var(--c-bg-0, white)', border: '1px solid var(--c-line-2, #e2e8f0)' }}>
+            <Brain size={48} color="#cbd5e1" style={{ marginBottom: '1rem' }} />
+            <h3 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--ios-text)' }}>No Mock Tests Found</h3>
+            <p style={{ color: 'var(--c-ink-4, #64748b)', fontSize: '0.85rem', margin: 0 }}>Try clearing your search.</p>
+          </div>
+        ) : (
+          /* ---- Quiz grid for the selected subject ---- */
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
+            {visibleQuizzesInGroup.map(renderQuizCard)}
+          </div>
+        )}
+
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,724 @@
+import { useState, useEffect, useMemo, useRef } from 'react';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { ArrowLeft, AlertTriangle, RefreshCw, Pencil, Eye, Save, X, Copy, Trash2, Columns, Archive, ArchiveRestore, Replace } from 'lucide-react';
+import { BlockRenderer } from '../../components/book/BlockRenderer';
+import { ChapterHeader } from '../../components/book/BookBlocks';
+import '../../components/book/BookBlocksClassic.css';
+import BlockEditForm, { BlockTypePicker, createBlock, genBlockId } from '../../components/admin/BlockEditForm';
+import { DuplicateBookModal, ConfirmDeleteModal, RenameBookModal, ConfirmArchiveModal } from '../../components/admin/BookFormModals';
+import { FindReplaceModal } from '../../components/admin/FindReplaceModal';
+
+const ADMIN_SECRET = import.meta.env.VITE_ADMIN_API_SECRET;
+
+const SEVERITY_STYLE = {
+  high: { border: '#dc2626', bg: '#fef2f2', label: '#b91c1c' },
+  medium: { border: '#d97706', bg: '#fffbeb', label: '#b45309' },
+  low: { border: '#94a3b8', bg: '#f8fafc', label: '#64748b' },
+};
+
+const cloneBlocks = (blocks) => JSON.parse(JSON.stringify(blocks || []));
+
+async function postBooksAction(body) {
+  const res = await fetch('/api/admin/save-resource', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-admin-api-secret': ADMIN_SECRET },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function fetchContentJson(url, fallbackBody) {
+  try {
+    const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store' });
+    if (res.ok) return await res.json();
+  } catch {}
+  const data = await postBooksAction({ type: 'books-fetch-content', url, ...fallbackBody });
+  return data.data;
+}
+
+// Full-page chapter browser/editor for one book. R2 is the only source of
+// truth for book content -- this reads metadata.json/chapter JSON straight
+// from the book's storage_base_url (a public R2 URL, same as the
+// candidate-facing reader fetches from) and saves go straight back to R2,
+// so there's no local filesystem step and no separate "Publish" action:
+// Save Chapter *is* live immediately. Lives outside AdminShell, same as
+// AdminContentEditor.jsx, since a chapter sidebar + content pane wants the
+// full viewport width.
+const BookChapterBrowser = () => {
+  const { category, book: resourceId } = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [book, setBook] = useState(null); // { resourceId, title, category, storageBaseUrl }
+  const [bookError, setBookError] = useState(null);
+  const [metadata, setMetadata] = useState(null);
+  const [issues, setIssues] = useState([]);
+  const [activeOrder, setActiveOrder] = useState(null);
+  const [chapterData, setChapterData] = useState(null);
+  const [chapterLoading, setChapterLoading] = useState(false);
+  const [chapterError, setChapterError] = useState(null);
+
+  const [mode, setMode] = useState('preview'); // 'preview' | 'edit'
+  const [editViewLayout, setEditViewLayout] = useState('split'); // 'split' | 'editor' | 'preview'
+  const [editTitle, setEditTitle] = useState('');
+  const [editBlocks, setEditBlocks] = useState([]);
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const [topPickerOpen, setTopPickerOpen] = useState(false);
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [showArchiveModal, setShowArchiveModal] = useState(false);
+  const [showDuplicateModal, setShowDuplicateModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [showFindReplaceModal, setShowFindReplaceModal] = useState(false);
+  const mainRef = useRef(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'h' || e.key === 'H')) {
+        e.preventDefault();
+        setShowFindReplaceModal((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (mainRef.current) {
+      mainRef.current.scrollTop = 0;
+    }
+  }, [activeOrder]);
+
+  useEffect(() => {
+    if (!localStorage.getItem('admin_session')) navigate('/admin/login');
+  }, [navigate]);
+
+  useEffect(() => {
+    // Reset immediately -- resourceId changing means a full navigation to a
+    // different book (e.g. after Duplicate/New Book), and this component
+    // instance stays mounted across that route change.
+    setBook(null);
+    setMetadata(null);
+    setActiveOrder(null);
+    setBookError(null);
+    (async () => {
+      try {
+        const data = await postBooksAction({ type: 'books-get', resourceId });
+        setBook(data);
+        // Cache-bust -- see the matching comment in SecureReader.jsx's
+        // loadChapter: this exact URL can be served stale (from a browser's
+        // or Cloudflare's cache) for up to a year after a real content edit.
+        // The Find & Replace success handler below already did this for its
+        // own re-fetch; this is the same fix applied to the initial load.
+        const meta = await fetchContentJson(`${data.storageBaseUrl}metadata.json`, {
+          storageBaseUrl: data.storageBaseUrl,
+          fileName: 'metadata.json',
+          resourceId: data.resourceId,
+        });
+        if (!meta) throw new Error('Failed to load book metadata');
+        setMetadata(meta);
+        const chapters = meta.chapters || [];
+        if (chapters.length > 0) setActiveOrder(chapters[0].order);
+      } catch (err) {
+        setBookError(err.message);
+      }
+    })();
+  }, [resourceId]);
+
+  useEffect(() => {
+    if (!book) return;
+    (async () => {
+      try {
+        const data = await postBooksAction({ type: 'books-issues', category: book.category, title: book.title });
+        setIssues(data.issues || []);
+      } catch {
+        // QA report is a nice-to-have overlay -- browsing still works without it
+      }
+    })();
+  }, [book]);
+
+  const issuesByChapterFile = useMemo(() => {
+    const map = {};
+    for (const iss of issues) {
+      const key = iss.chapterFile;
+      if (!key) continue;
+      if (!map[key]) map[key] = [];
+      map[key].push(iss);
+    }
+    return map;
+  }, [issues]);
+
+  const issuesByBlockId = useMemo(() => {
+    const map = {};
+    for (const iss of issues) {
+      if (!iss.blockId) continue;
+      const key = `${iss.chapterFile}::${iss.blockId}`;
+      if (!map[key]) map[key] = [];
+      map[key].push(iss);
+    }
+    return map;
+  }, [issues]);
+
+  const activeChapterMeta = useMemo(
+    () => metadata?.chapters?.find((c) => c.order === activeOrder),
+    [metadata, activeOrder],
+  );
+
+  useEffect(() => {
+    if (!activeChapterMeta || !book) return;
+    (async () => {
+      setChapterLoading(true);
+      setChapterError(null);
+      setChapterData(null);
+      setMode('preview');
+      setDirty(false);
+      setSaveError(null);
+      try {
+        const data = await fetchContentJson(`${book.storageBaseUrl}${activeChapterMeta.file_name}`, {
+          storageBaseUrl: book.storageBaseUrl,
+          fileName: activeChapterMeta.file_name,
+          resourceId: book.resourceId,
+        });
+        if (!data) throw new Error('Failed to load chapter content');
+        setChapterData(data);
+      } catch (err) {
+        setChapterError(err.message);
+      } finally {
+        setChapterLoading(false);
+      }
+    })();
+  }, [activeChapterMeta, book]);
+
+  const selectChapter = (order) => {
+    if (dirty && !window.confirm('Discard unsaved changes to this chapter?')) return;
+    setActiveOrder(order);
+  };
+
+  const enterEditMode = () => {
+    setEditTitle(chapterData.title || '');
+    setEditBlocks(cloneBlocks(chapterData.blocks));
+    setDirty(false);
+    setSaveError(null);
+    setMode('edit');
+    setEditViewLayout('split');
+  };
+
+  const cancelEdit = () => {
+    if (dirty && !window.confirm('Discard unsaved changes to this chapter?')) return;
+    setMode('preview');
+  };
+
+  const markDirty = (nextBlocks) => { setEditBlocks(nextBlocks); setDirty(true); };
+
+  const updateBlock = (idx, updated) => markDirty(editBlocks.map((b, i) => (i === idx ? updated : b)));
+  const deleteBlock = (idx) => markDirty(editBlocks.filter((_, i) => i !== idx));
+  const duplicateBlock = (idx) => {
+    const copy = { ...JSON.parse(JSON.stringify(editBlocks[idx])), id: genBlockId() };
+    const next = [...editBlocks];
+    next.splice(idx + 1, 0, copy);
+    markDirty(next);
+  };
+  const moveBlock = (idx, dir) => {
+    const next = [...editBlocks];
+    const target = idx + dir;
+    if (target < 0 || target >= next.length) return;
+    [next[idx], next[target]] = [next[target], next[idx]];
+    markDirty(next);
+  };
+  const insertBlockAt = (idx, type) => {
+    const next = [...editBlocks];
+    next.splice(idx, 0, createBlock(type));
+    markDirty(next);
+  };
+
+  const saveChapter = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const payload = { id: chapterData.id, title: editTitle, order: chapterData.order, blocks: editBlocks };
+      await postBooksAction({ type: 'books-save-chapter', resourceId: book.resourceId, fileName: activeChapterMeta.file_name, chapterData: payload });
+
+      setChapterData(payload);
+      setMetadata((prev) => ({
+        ...prev,
+        chapters: prev.chapters.map((c) => (c.file_name === activeChapterMeta.file_name ? { ...c, title: editTitle, blocks_count: editBlocks.length } : c)),
+      }));
+      setDirty(false);
+      setMode('preview');
+    } catch (err) {
+      setSaveError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const chapterLevelIssues = activeChapterMeta
+    ? (issuesByChapterFile[activeChapterMeta.file_name.replace('chapters/', '')] || []).filter((i) => !i.blockId)
+    : [];
+
+  return (
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: '#f4f5f7', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '1rem 2rem', background: 'white', borderBottom: '1px solid #e2e8f0', flexShrink: 0, zIndex: 50 }}>
+        <button onClick={() => { if (dirty && !window.confirm('Discard unsaved changes?')) return; navigate('/admin/books'); }} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'transparent', border: 'none', color: '#64748b', fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer' }}>
+          <ArrowLeft size={18} /> Back
+        </button>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <h1 style={{ fontSize: '1.15rem', margin: 0, fontWeight: 800, color: '#0f172a' }}>
+              {book?.title || location.state?.bookTitle || (bookError ? 'Book not found' : 'Loading…')}
+            </h1>
+            {book?.isArchived && (
+              <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fef3c7', padding: '0.15rem 0.5rem', borderRadius: 2 }}>
+                Archived
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: '0.78rem', color: '#94a3b8' }}>{category}</div>
+        </div>
+        {issues.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#b91c1c', fontWeight: 700 }}>
+            <AlertTriangle size={16} /> {issues.filter((i) => i.severity === 'high').length} high · {issues.filter((i) => i.severity === 'medium').length} medium
+          </div>
+        )}
+        {book && (
+          <button
+            onClick={() => setShowFindReplaceModal(true)}
+            title="Find & Replace across document (Ctrl+H)"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              padding: '0.5rem 0.85rem',
+              background: 'white',
+              color: '#0f172a',
+              border: '1px solid #cbd5e1',
+              borderRadius: 2,
+              fontWeight: 700,
+              fontSize: '0.8rem',
+              cursor: 'pointer',
+              boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+            }}
+          >
+            <Replace size={14} style={{ color: '#1F3A2E' }} /> Find &amp; Replace
+          </button>
+        )}
+        {book && mode === 'preview' && (
+          <>
+            <button onClick={() => setShowRenameModal(true)} title="Rename this book" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 0.85rem', background: 'white', color: '#64748b', border: '1px solid #e2e8f0', borderRadius: 2, fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer' }}>
+              <Pencil size={14} /> Rename
+            </button>
+            {book.isArchived ? (
+              <button
+                onClick={async () => {
+                  try {
+                    await postBooksAction({ type: 'books-unarchive', resourceId: book.resourceId });
+                    setBook((prev) => ({ ...prev, isArchived: false, status: 'Published' }));
+                  } catch (err) {
+                    alert('Failed to unarchive: ' + err.message);
+                  }
+                }}
+                title="Restore this book to active catalog"
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 0.85rem', background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', borderRadius: 2, fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer' }}
+              >
+                <ArchiveRestore size={14} /> Unarchive
+              </button>
+            ) : (
+              <button onClick={() => setShowArchiveModal(true)} title="Archive this book" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 0.85rem', background: 'white', color: '#d97706', border: '1px solid #fed7aa', borderRadius: 2, fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer' }}>
+                <Archive size={14} /> Archive
+              </button>
+            )}
+            <button onClick={() => setShowDuplicateModal(true)} title="Duplicate this book" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 0.85rem', background: 'white', color: '#64748b', border: '1px solid #e2e8f0', borderRadius: 2, fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer' }}>
+              <Copy size={14} /> Duplicate
+            </button>
+            <button onClick={() => setShowDeleteModal(true)} title="Delete this book" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 0.85rem', background: 'white', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 2, fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer' }}>
+              <Trash2 size={14} /> Delete
+            </button>
+          </>
+        )}
+        {chapterData && mode === 'preview' && (
+          <button onClick={enterEditMode} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 1rem', background: '#1F3A2E', color: 'white', border: 'none', borderRadius: 2, fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer' }}>
+            <Pencil size={14} /> Edit Chapter
+          </button>
+        )}
+        {mode === 'edit' && (
+          <>
+            <div style={{ display: 'inline-flex', background: '#f1f5f9', padding: '3px', borderRadius: 2, border: '1px solid #e2e8f0', marginRight: '0.5rem' }}>
+              <button
+                type="button"
+                onClick={() => setEditViewLayout('split')}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '0.35rem',
+                  padding: '0.4rem 0.75rem',
+                  borderRadius: 2,
+                  border: 'none',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  background: editViewLayout === 'split' ? 'white' : 'transparent',
+                  color: editViewLayout === 'split' ? '#0f172a' : '#64748b',
+                  boxShadow: editViewLayout === 'split' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                  transition: 'all 0.15s',
+                }}
+                title="Side-by-side Editor and Live Preview"
+              >
+                <Columns size={13} /> Split View
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditViewLayout('editor')}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '0.35rem',
+                  padding: '0.4rem 0.75rem',
+                  borderRadius: 2,
+                  border: 'none',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  background: editViewLayout === 'editor' ? 'white' : 'transparent',
+                  color: editViewLayout === 'editor' ? '#0f172a' : '#64748b',
+                  boxShadow: editViewLayout === 'editor' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                  transition: 'all 0.15s',
+                }}
+                title="Editor only"
+              >
+                <Pencil size={13} /> Editor
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditViewLayout('preview')}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '0.35rem',
+                  padding: '0.4rem 0.75rem',
+                  borderRadius: 2,
+                  border: 'none',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  background: editViewLayout === 'preview' ? 'white' : 'transparent',
+                  color: editViewLayout === 'preview' ? '#0f172a' : '#64748b',
+                  boxShadow: editViewLayout === 'preview' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                  transition: 'all 0.15s',
+                }}
+                title="Preview only"
+              >
+                <Eye size={13} /> Preview
+              </button>
+            </div>
+
+            <button onClick={cancelEdit} disabled={saving} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 1rem', background: 'white', color: '#64748b', border: '1px solid #e2e8f0', borderRadius: 2, fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer' }}>
+              <X size={14} /> Cancel
+            </button>
+            <button onClick={saveChapter} disabled={saving || !dirty} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 1.25rem', background: dirty ? '#1F3A2E' : '#cbd5e1', color: 'white', border: 'none', borderRadius: 2, fontWeight: 700, fontSize: '0.8rem', cursor: dirty ? 'pointer' : 'not-allowed' }}>
+              <Save size={14} /> {saving ? 'Saving…' : 'Save Chapter'}
+            </button>
+          </>
+        )}
+      </div>
+
+      {bookError && <div style={{ padding: '2rem' }}>Failed to load this book: {bookError}</div>}
+
+      {metadata && book && (
+        <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          <aside style={{ borderRight: '1px solid #e2e8f0', background: 'white', overflowY: 'auto', padding: '0.75rem', height: '100%' }}>
+            {(metadata.chapters || []).map((c) => {
+              const chapterIssues = issuesByChapterFile[c.file_name.replace('chapters/', '')] || [];
+              const highCount = chapterIssues.filter((i) => i.severity === 'high').length;
+              const mediumCount = chapterIssues.filter((i) => i.severity === 'medium').length;
+              return (
+                <div
+                  key={c.order}
+                  onClick={() => selectChapter(c.order)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.55rem 0.6rem', borderRadius: 2, cursor: 'pointer', marginBottom: '0.25rem',
+                    background: activeOrder === c.order ? '#eef2eb' : 'transparent',
+                    border: activeOrder === c.order ? '1px solid rgba(75,107,50,0.2)' : '1px solid transparent',
+                  }}
+                >
+                  <div style={{ width: 22, height: 22, borderRadius: 2, background: activeOrder === c.order ? '#4b6b32' : '#f1f5f9', color: activeOrder === c.order ? 'white' : '#475569', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', fontWeight: 700, flexShrink: 0 }}>
+                    {c.order}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title}</div>
+                    <div style={{ fontSize: '0.7rem', color: '#94a3b8' }}>{c.blocks_count} blocks</div>
+                  </div>
+                  {highCount > 0 && <span style={{ fontSize: '0.68rem', fontWeight: 800, color: '#b91c1c', background: '#fef2f2', borderRadius: 2, padding: '0.1rem 0.4rem' }}>{highCount}</span>}
+                  {highCount === 0 && mediumCount > 0 && <span style={{ fontSize: '0.68rem', fontWeight: 800, color: '#b45309', background: '#fffbeb', borderRadius: 2, padding: '0.1rem 0.4rem' }}>{mediumCount}</span>}
+                </div>
+              );
+            })}
+          </aside>
+
+          {mode === 'preview' ? (
+            <main ref={mainRef} style={{ padding: '2rem', overflowY: 'auto', height: '100%' }}>
+              <div className="bk-classic" style={{ background: 'white', borderRadius: 2, padding: '2rem', boxShadow: '0 2px 20px rgba(0,0,0,0.04)', border: '1px solid #e8eaed', maxWidth: 820, margin: '0 auto' }}>
+                {chapterLoading && <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}><RefreshCw className="animate-spin" size={24} /></div>}
+                {chapterError && <p>Unable to load this chapter ({chapterError}).</p>}
+
+                {chapterData && !chapterLoading && (
+                  <>
+                    <ChapterHeader title={chapterData.title} order={chapterData.order} />
+                    {chapterLevelIssues.length > 0 && (
+                      <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 2, padding: '0.85rem 1rem', marginBottom: '1.25rem' }}>
+                        <strong style={{ color: '#b91c1c', fontSize: '0.82rem' }}>Chapter-level issues</strong>
+                        <ul style={{ margin: '0.4rem 0 0', paddingLeft: '1.1rem', fontSize: '0.78rem', color: '#7f1d1d' }}>
+                          {chapterLevelIssues.map((iss, i) => <li key={i}>{iss.issue}: {iss.detail}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                    {(chapterData.blocks || []).map((block, idx) => {
+                      const blockIssues = issuesByBlockId[`${activeChapterMeta.file_name.replace('chapters/', '')}::${block.id}`] || [];
+                      const worst = blockIssues.find((i) => i.severity === 'high') || blockIssues[0];
+                      const style = worst ? SEVERITY_STYLE[worst.severity] : null;
+                      return (
+                        <div
+                          key={block.id || idx}
+                          style={style ? { border: `1.5px dashed ${style.border}`, background: style.bg, borderRadius: 2, padding: '0.6rem 0.75rem', marginBottom: '0.5rem' } : undefined}
+                        >
+                          {blockIssues.length > 0 && (
+                            <div style={{ fontSize: '0.7rem', fontWeight: 800, color: SEVERITY_STYLE[worst.severity].label, marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+                              <AlertTriangle size={11} style={{ verticalAlign: '-1px', marginRight: 4 }} />
+                              {blockIssues.map((i) => i.issue).join(', ')}
+                            </div>
+                          )}
+                          <BlockRenderer block={block} />
+                        </div>
+                      );
+                    })}
+                    {(chapterData.blocks || []).length === 0 && <p style={{ color: '#94a3b8' }}>This chapter has no blocks.</p>}
+                  </>
+                )}
+              </div>
+            </main>
+          ) : (
+            <main ref={mainRef} style={{ padding: '1.25rem', height: '100%', overflowY: 'auto' }}>
+              {chapterLoading && <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}><RefreshCw className="animate-spin" size={24} /></div>}
+              {chapterError && <p>Unable to load this chapter ({chapterError}).</p>}
+
+              {chapterData && !chapterLoading && (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: editViewLayout === 'split' ? 'minmax(0, 1fr) minmax(0, 1fr)' : 'minmax(0, 1fr)',
+                  gap: '1.25rem',
+                  alignItems: 'start',
+                  maxWidth: editViewLayout === 'split' ? 'none' : '860px',
+                  margin: editViewLayout === 'split' ? '0' : '0 auto',
+                  width: '100%',
+                }}>
+                  {/* Left Column: Chapter Editor */}
+                  {(editViewLayout === 'split' || editViewLayout === 'editor') && (
+                    <div style={{
+                      background: 'white',
+                      borderRadius: 2,
+                      border: '1px solid #e2e8f0',
+                      boxShadow: '0 2px 14px rgba(0,0,0,0.03)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                    }}>
+                      <div style={{
+                        padding: '0.85rem 1.25rem',
+                        borderBottom: '1px solid #e2e8f0',
+                        background: '#f8fafc',
+                        borderTopLeftRadius: 2,
+                        borderTopRightRadius: 2,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        flexShrink: 0
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <Pencil size={15} style={{ color: '#1F3A2E' }} />
+                          <span style={{ fontWeight: 800, fontSize: '0.88rem', color: '#0f172a' }}>Chapter Editor</span>
+                          <span style={{ fontSize: '0.72rem', color: '#64748b' }}>({editBlocks.length} blocks)</span>
+                        </div>
+                        {dirty ? (
+                          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#d97706', background: '#fffbeb', border: '1px solid #fef3c7', padding: '0.2rem 0.55rem', borderRadius: 2 }}>
+                            Unsaved changes
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: '0.72rem', fontWeight: 600, color: '#64748b' }}>
+                            Saved
+                          </span>
+                        )}
+                      </div>
+
+                      <div style={{ padding: '1.25rem' }}>
+                        {saveError && (
+                          <div style={{ background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', borderRadius: 2, padding: '0.6rem 0.85rem', marginBottom: '1rem', fontSize: '0.8rem' }}>
+                            Save failed: {saveError}
+                          </div>
+                        )}
+                        <div style={{ marginBottom: '1.25rem' }}>
+                          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: '#475569', display: 'block', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                            Chapter title
+                          </label>
+                          <input
+                            type="text"
+                            value={editTitle}
+                            onChange={(e) => { setEditTitle(e.target.value); setDirty(true); }}
+                            placeholder="Enter chapter title..."
+                            style={{ width: '100%', padding: '0.65rem 0.85rem', border: '1px solid #cbd5e1', borderRadius: 2, fontSize: '0.95rem', fontWeight: 700, boxSizing: 'border-box', background: '#f8fafc' }}
+                          />
+                        </div>
+
+                        {editBlocks.length === 0 && (
+                          <div style={{ textAlign: 'center', padding: '2rem 1rem', background: '#f8fafc', borderRadius: 2, border: '1px dashed #cbd5e1', color: '#64748b', fontSize: '0.85rem' }}>
+                            This chapter has no blocks yet. Click below to add your first block.
+                          </div>
+                        )}
+
+                        {editBlocks.map((block, idx) => (
+                          <BlockEditForm
+                            key={block.id || idx}
+                            block={block}
+                            onChange={(updated) => updateBlock(idx, updated)}
+                            onDelete={() => deleteBlock(idx)}
+                            onDuplicate={() => duplicateBlock(idx)}
+                            onMoveUp={() => moveBlock(idx, -1)}
+                            onMoveDown={() => moveBlock(idx, 1)}
+                            canMoveUp={idx > 0}
+                            canMoveDown={idx < editBlocks.length - 1}
+                            onInsertAfter={(type) => insertBlockAt(idx + 1, type)}
+                          />
+                        ))}
+
+                        <div style={{ marginTop: '1rem', paddingBottom: '1.5rem' }}>
+                          {topPickerOpen ? (
+                            <BlockTypePicker onPick={(type) => { insertBlockAt(editBlocks.length, type); setTopPickerOpen(false); }} onCancel={() => setTopPickerOpen(false)} />
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setTopPickerOpen(true)}
+                              style={{ width: '100%', padding: '0.75rem', border: '1.5px dashed #94a3b8', borderRadius: 2, background: '#f8fafc', color: '#1F3A2E', fontWeight: 700, fontSize: '0.82rem', cursor: 'pointer', transition: 'all 0.15s' }}
+                            >
+                              + Add block at end
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Right Column: Preview */}
+                  {(editViewLayout === 'split' || editViewLayout === 'preview') && (
+                    <div style={{
+                      background: 'white',
+                      borderRadius: 2,
+                      border: '1px solid #e2e8f0',
+                      boxShadow: '0 2px 14px rgba(0,0,0,0.03)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                    }}>
+                      <div className="bk-classic" style={{ padding: '1.75rem', background: '#ffffff', borderRadius: 2 }}>
+                        <ChapterHeader title={editTitle || 'Untitled Chapter'} order={chapterData?.order || 1} />
+
+                        <div className="bk-blocks-container" style={{ marginTop: '1.25rem' }}>
+                          {editBlocks.map((block, idx) => (
+                            <div key={block.id || idx} style={{ marginBottom: '0.75rem' }}>
+                              <BlockRenderer block={block} />
+                            </div>
+                          ))}
+                        </div>
+
+                        {editBlocks.length === 0 && (
+                          <div style={{ textAlign: 'center', padding: '3.5rem 1.5rem', color: '#94a3b8' }}>
+                            <Eye size={32} style={{ opacity: 0.35, marginBottom: '0.75rem' }} />
+                            <p style={{ margin: 0, fontWeight: 700, fontSize: '0.9rem', color: '#64748b' }}>Preview will appear here</p>
+                            <p style={{ margin: '0.35rem 0 0', fontSize: '0.8rem', color: '#94a3b8' }}>Add blocks on the left editor to preview how candidates see them.</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </main>
+          )}
+        </div>
+      )}
+
+      {showRenameModal && book && (
+        <RenameBookModal
+          book={book}
+          onClose={() => setShowRenameModal(false)}
+          onRenamed={(newTitle) => {
+            setShowRenameModal(false);
+            setBook((prev) => ({ ...prev, title: newTitle }));
+            setMetadata((prev) => (prev ? { ...prev, title: newTitle } : prev));
+          }}
+        />
+      )}
+      {showArchiveModal && book && (
+        <ConfirmArchiveModal
+          book={book}
+          onClose={() => setShowArchiveModal(false)}
+          onArchived={() => {
+            setShowArchiveModal(false);
+            setBook((prev) => ({ ...prev, isArchived: true, status: 'Archived' }));
+          }}
+        />
+      )}
+      {showDuplicateModal && book && (
+        <DuplicateBookModal
+          source={book}
+          onClose={() => setShowDuplicateModal(false)}
+          onDuplicated={(cat, newResourceId, dupTitle) => { setShowDuplicateModal(false); navigate(`/admin/books/${cat}/${newResourceId}`, { state: { bookTitle: dupTitle } }); }}
+        />
+      )}
+      {showDeleteModal && book && (
+        <ConfirmDeleteModal
+          book={book}
+          onClose={() => setShowDeleteModal(false)}
+          onDeleted={() => navigate('/admin/books')}
+        />
+      )}
+      {showFindReplaceModal && book && (
+        <FindReplaceModal
+          book={book}
+          metadata={metadata}
+          activeChapterMeta={activeChapterMeta}
+          currentChapterData={chapterData}
+          onClose={() => setShowFindReplaceModal(false)}
+          onSuccess={async (result) => {
+            if (result.metadata) {
+              setMetadata(result.metadata);
+              if (result.metadata.title && result.metadata.title !== book.title) {
+                setBook((prev) => ({ ...prev, title: result.metadata.title }));
+              }
+            } else {
+              try {
+                const meta = await fetchContentJson(`${book.storageBaseUrl}metadata.json`, {
+                  storageBaseUrl: book.storageBaseUrl,
+                  fileName: 'metadata.json',
+                  resourceId: book.resourceId,
+                });
+                if (meta) setMetadata(meta);
+              } catch {}
+            }
+
+            if (activeChapterMeta) {
+              try {
+                const data = await fetchContentJson(`${book.storageBaseUrl}${activeChapterMeta.file_name}`, {
+                  storageBaseUrl: book.storageBaseUrl,
+                  fileName: activeChapterMeta.file_name,
+                  resourceId: book.resourceId,
+                });
+                if (data) {
+                  setChapterData(data);
+                  if (mode === 'edit') {
+                    setEditTitle(data.title || '');
+                    setEditBlocks(cloneBlocks(data.blocks));
+                    setDirty(false);
+                  }
+                }
+              } catch {}
+            }
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+export default BookChapterBrowser;

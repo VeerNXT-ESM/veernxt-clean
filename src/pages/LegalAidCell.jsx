@@ -1,0 +1,644 @@
+import { useMemo, useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { supabase } from '../lib/supabase';
+import {
+  stepLabels,
+  profiles,
+  services,
+  profileFieldsConfig,
+  legalCategories,
+  situationsByCategory,
+  legalFlows,
+  genCaseRef,
+  classifyFreeform,
+  computeUrgency,
+  recommendRoute,
+  composeProfileLine,
+} from '../lib/legalAidCellConfig';
+import './LegalAidCell.css';
+import { useSeo } from '../lib/useSeo';
+
+const initialState = {
+  urgent: false,
+  profile: 'ex_serviceman',
+  service: 'Army',
+  profileData: {},
+  category: 'pension',
+  situation: null,
+  flowKey: null,
+  skippedSituation: false,
+  qa: {},
+  docsChecked: {},
+  caseRef: null,
+};
+
+/* ─── Category labels (same as admin) ─── */
+const CATEGORY_LABELS = {
+  pension: 'Pension / Pay', housing: 'Housing / Land',
+  service_matter: 'Service Matter', fraud: 'Fraud / Cyber',
+  family: 'Family / Succession', disability: 'Disability',
+  court: 'Court / Legal Proceedings', unknown: 'Not Classified',
+};
+
+const STATUS_STYLE = {
+  new:       { label: 'Submitted',   color: '#e3c677', bg: 'rgba(227,198,119,0.15)', border: 'rgba(227,198,119,0.3)' },
+  in_review: { label: 'In Review',   color: '#f0a04b', bg: 'rgba(240,160,75,0.15)',  border: 'rgba(240,160,75,0.3)'  },
+  responded: { label: 'Responded',   color: '#6fcf97', bg: 'rgba(111,207,151,0.15)', border: 'rgba(111,207,151,0.3)' },
+  closed:    { label: 'Closed',      color: '#8b9aad', bg: 'rgba(139,154,173,0.12)', border: 'rgba(139,154,173,0.25)'},
+};
+
+const LegalAidCell = () => {
+  const navigate = useNavigate();
+  const [current, setCurrent] = useState(1);
+  const [state, setState] = useState(initialState);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
+
+  useSeo({
+    title: 'Legal Aid Cell for Ex-Servicemen',
+    description: "Free and assisted legal aid services for ex-servicemen -- get guidance, raise a case, and track resolution with the VeerNXT Legal Aid Cell.",
+    path: '/legal-aid',
+  });
+
+  const patch = (updater) => setState((s) => ({ ...s, ...(typeof updater === 'function' ? updater(s) : updater) }));
+
+  const ctx = useMemo(
+    () => ({ qa: state.qa, profile: state.profile, category: state.category, situation: state.situation, profileData: state.profileData }),
+    [state.qa, state.profile, state.category, state.situation, state.profileData]
+  );
+
+  /* Load the authenticated user's past submissions */
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setHistoryLoading(true);
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) { setHistoryLoading(false); return; }
+        const { data } = await supabase
+          .from('legal_aid_queries')
+          .select('id, case_ref, created_at, category, situation, urgency, status')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(10);
+        if (!cancelled) setHistory(data || []);
+      } catch (_) { /* silently ignore */ }
+      finally { if (!cancelled) setHistoryLoading(false); }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  const exitAssistance = () => navigate(-1);
+
+  const go = (n) => {
+    if ((n === 7 || n === 8) && !state.caseRef) patch({ caseRef: genCaseRef() });
+    setCurrent(n);
+    window.scrollTo(0, 0);
+  };
+
+  const selectChoiceUrgent = (isUrgent) => patch({ urgent: isUrgent });
+  const selectProfile = (id) => patch({ profile: id, profileData: {} });
+  const selectService = (value) => patch({ service: value });
+  const setProfileField = (fieldId, value) => patch((s) => ({ profileData: { ...s.profileData, [fieldId]: value } }));
+  const selectCategory = (id) => patch({ category: id });
+  const selectSituation = (id, flow) => patch({ situation: id, flowKey: flow });
+
+  const continueFromCategory = () => {
+    if (state.category === 'unknown') {
+      patch({ situation: 'unknown_freeform', flowKey: 'unknown_freeform', skippedSituation: true, qa: {}, docsChecked: {} });
+      go(5);
+    } else {
+      patch({ skippedSituation: false });
+      go(4);
+    }
+  };
+  const continueFromSituation = () => {
+    patch({ qa: {}, docsChecked: {} });
+    go(5);
+  };
+  const backFromQuestions = () => go(state.skippedSituation ? 3 : 4);
+
+  const answerSingle = (qid, value) => patch((s) => ({ qa: { ...s.qa, [qid]: value } }));
+  const answerMulti = (qid, value, checked) =>
+    patch((s) => {
+      let arr = Array.isArray(s.qa[qid]) ? [...s.qa[qid]] : [];
+      if (checked) {
+        if (value === 'No') arr = ['No'];
+        else {
+          arr = arr.filter((v) => v !== 'No');
+          arr.push(value);
+        }
+      } else {
+        arr = arr.filter((v) => v !== value);
+      }
+      return { qa: { ...s.qa, [qid]: arr } };
+    });
+  const answerText = (qid, value) => patch((s) => ({ qa: { ...s.qa, [qid]: value } }));
+
+  const isDocChecked = (doc) => (doc.id in state.docsChecked ? state.docsChecked[doc.id] : doc.defaultChecked !== false);
+  const toggleDoc = (doc) => patch((s) => ({ docsChecked: { ...s.docsChecked, [doc.id]: !isDocChecked(doc) } }));
+
+  const flow = state.flowKey ? legalFlows[state.flowKey] : null;
+
+  return (
+    <div className="legal-aid-cell">
+      <main className="flow">
+        <aside className="side">
+          <button type="button" className="exit" onClick={exitAssistance}>× Exit assistance</button>
+          <p className="eyebrow" style={{ color: '#e3c677', marginTop: 35 }}>Legal Sahayata</p>
+          <h2>We will guide you,<br />one step at a time.</h2>
+          <ol className="steps">
+            {stepLabels.map((s, i) => (
+              <li key={s} className={`${i + 1 === current ? 'active' : ''} ${i + 1 < current ? 'done' : ''}`}>
+                <span className="num">{i + 1 < current ? '✓' : i + 1}</span>{s}
+              </li>
+            ))}
+          </ol>
+
+          {/* My past submissions in sidebar */}
+          {history.length > 0 && (
+            <div style={{ marginTop: 28, borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: 20 }}>
+              <p style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#e3c677', marginBottom: 10 }}>My Submissions</p>
+              {history.map((h) => {
+                const sm = STATUS_STYLE[h.status] || STATUS_STYLE.new;
+                return (
+                  <div key={h.id} style={{ marginBottom: 8, background: 'rgba(255,255,255,0.04)', borderRadius: 2, padding: '8px 10px', border: '1px solid rgba(255,255,255,0.07)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4 }}>
+                      <span style={{ fontFamily: 'monospace', fontSize: 11, fontWeight: 700, color: '#e3c677' }}>{h.case_ref}</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 2, color: sm.color, background: sm.bg, border: `1px solid ${sm.border}`, whiteSpace: 'nowrap' }}>{sm.label}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginTop: 3 }}>{CATEGORY_LABELS[h.category] || h.category}</div>
+                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.3)', marginTop: 1 }}>{new Date(h.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <div className="privacy">🔒 Your information is private and can only be seen by authorised support personnel.</div>
+        </aside>
+
+        <section className="panel">
+          <div className="mobileprogress">
+            <span>STEP {current} OF {stepLabels.length}</span>
+            <div className="bar"><span style={{ width: `${(current / stepLabels.length) * 100}%` }} /></div>
+          </div>
+
+          {current === 1 && (
+            <div className="content">
+              <div className="body">
+                <p className="eyebrow">Safety first</p>
+                <h1>Before we begin, is your matter urgent?</h1>
+                <p className="intro">Please tell us if any of the following apply. This will help us arrange the right support without delay.</p>
+                <ul style={{ margin: '14px 0 0', paddingLeft: 20, color: 'var(--muted)', lineHeight: 1.8, fontSize: 14 }}>
+                  <li>You are in immediate danger</li>
+                  <li>You are facing arrest or detention</li>
+                  <li>You have a court hearing coming up</li>
+                  <li>You have a deadline within the next 72 hours</li>
+                  <li>You are experiencing active financial or cyber fraud</li>
+                  <li>Any other situation needing immediate assistance</li>
+                </ul>
+                <div className="choices">
+                  <button type="button" className={`choice ${!state.urgent ? 'selected' : ''}`} onClick={() => selectChoiceUrgent(false)}>
+                    <span>🛡</span><strong>No, I am safe right now</strong><small>I can continue through the normal assistance steps.</small>
+                  </button>
+                  <button type="button" className={`choice danger ${state.urgent ? 'selected' : ''}`} onClick={() => selectChoiceUrgent(true)}>
+                    <span>⚠</span><strong>Yes, this may be urgent</strong><small>There is danger, arrest, active fraud or an urgent deadline.</small>
+                  </button>
+                </div>
+                {state.urgent && (
+                  <div className="notice">
+                    <strong>Please seek immediate help.</strong> Call 112 if you are in danger. For cyber financial fraud, call 1930. VeerNXT does not replace emergency services — you can still continue with the questions below so we can prepare your case, and we will flag it as urgent.
+                  </div>
+                )}
+                <p className="intro" style={{ fontSize: 12 }}>🔒 Please do not upload classified, restricted, operational or security sensitive documents.</p>
+              </div>
+              <div className="actions">
+                <span />
+                <button type="button" className="next" onClick={() => go(2)}>Continue →</button>
+              </div>
+            </div>
+          )}
+
+          {current === 2 && (
+            <div className="content">
+              <div className="body">
+                <p className="eyebrow">About you</p>
+                <h1>What best describes your connection to the Armed Forces?</h1>
+                <p className="intro">Your profile helps us understand which rules may apply and which specialist should review your matter.</p>
+                <div className="pills">
+                  {profiles.map((p) => (
+                    <button key={p.id} type="button" className={`pill ${p.id === state.profile ? 'selected' : ''}`} onClick={() => selectProfile(p.id)}>{p.label}</button>
+                  ))}
+                </div>
+                <b>Which service were you / your family member connected to?</b>
+                <div className="servicegrid">
+                  {services.map((s) => (
+                    <button key={s} type="button" className={`servicebtn ${s === state.service ? 'selected' : ''}`} onClick={() => selectService(s)}>{s}</button>
+                  ))}
+                </div>
+                <div className="fields">
+                  {(profileFieldsConfig[state.profile] || []).map((f) =>
+                    f.type === 'yesno' ? (
+                      <div className="field" key={f.id}>
+                        <label>{f.label}</label>
+                        <div className="pills" style={{ margin: '8px 0 0' }}>
+                          {['Yes', 'No', 'Not sure'].map((o) => (
+                            <button key={o} type="button" className={`pill ${state.profileData[f.id] === o ? 'selected' : ''}`} onClick={() => setProfileField(f.id, o)}>{o}</button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <label className="field" key={f.id}>
+                        {f.label}
+                        <input type="text" placeholder={f.placeholder || ''} value={state.profileData[f.id] || ''} onChange={(e) => setProfileField(f.id, e.target.value)} />
+                      </label>
+                    )
+                  )}
+                </div>
+                <div className="fields" style={{ marginTop: 15 }}>
+                  <label className="field">State or Union Territory<input defaultValue="Uttarakhand" /></label>
+                </div>
+              </div>
+              <div className="actions">
+                <button type="button" className="back" onClick={() => go(1)}>← Back</button>
+                <button type="button" className="next" onClick={() => go(3)}>Continue →</button>
+              </div>
+            </div>
+          )}
+
+          {current === 3 && (
+            <div className="content">
+              <div className="body">
+                <p className="eyebrow">What happened</p>
+                <h1>What happened?</h1>
+                <p className="intro">Choose the situation that is closest to your concern. You don't need to know the legal term for it.</p>
+                <div className="issuegrid">
+                  {legalCategories.map((c) => (
+                    <button key={c.id} type="button" className={`issue ${c.id === state.category ? 'selected' : ''}`} onClick={() => selectCategory(c.id)}>
+                      <span style={{ fontSize: 22 }}>{c.icon}</span>
+                      <span><b>{c.title}</b><small>{c.desc}</small></span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="actions">
+                <button type="button" className="back" onClick={() => go(2)}>← Back</button>
+                <button type="button" className="next" onClick={continueFromCategory}>Continue →</button>
+              </div>
+            </div>
+          )}
+
+          {current === 4 && (() => {
+            const cat = legalCategories.find((c) => c.id === state.category);
+            const list = situationsByCategory[state.category] || [];
+            return (
+              <div className="content">
+                <div className="body">
+                  <p className="eyebrow">{cat ? cat.title : 'Your situation'}</p>
+                  <h1>What is happening?</h1>
+                  <p className="intro">Select the option closest to your situation.</p>
+                  <div className="issuegrid">
+                    {list.map((s) => (
+                      <button key={s.id} type="button" className={`issue ${s.id === state.situation ? 'selected' : ''}`} onClick={() => selectSituation(s.id, s.flow)}>
+                        <b>{s.label}</b>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="actions">
+                  <button type="button" className="back" onClick={() => go(3)}>← Back</button>
+                  <button type="button" className="next" onClick={continueFromSituation}>Continue →</button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {current === 5 && flow && (() => {
+            const isUnknown = state.flowKey === 'unknown_freeform';
+            const sit = (situationsByCategory[state.category] || []).find((s) => s.id === state.situation);
+            const heading = isUnknown ? "Tell us what happened, and we'll ask a few quick questions." : (sit ? sit.label : 'Just a few questions about your situation.');
+            const showFraudBanner = ['cyber_fraud', 'financial_fraud', 'impersonation_fraud'].includes(state.situation);
+            const visibleQuestions = flow.questions.filter((q) => !q.showIf || q.showIf(ctx));
+            return (
+              <div className="content">
+                <div className="body">
+                  <p className="eyebrow">A few questions</p>
+                  <h1>{heading}</h1>
+                  <p className="intro">Your answers help our Legal Support Desk understand what happened and prepare your case history. They do not amount to legal advice.</p>
+                  {isUnknown && (
+                    <label className="field">Tell us what happened
+                      <textarea className="textarea" placeholder="For example: My pension was coming every month but stopped two months ago." value={state.qa.story || ''} onChange={(e) => answerText('story', e.target.value)} />
+                    </label>
+                  )}
+                  {showFraudBanner && (
+                    <div className="notice">If you are experiencing active cyber or financial fraud, call <strong>1930</strong> immediately or report at cybercrime.gov.in. This questionnaire helps prepare your case but does not replace that report.</div>
+                  )}
+                  {visibleQuestions.map((q) => (
+                    <div className="qblock" key={q.id}>
+                      <b>{q.prompt}</b>
+                      {q.help && <p className="intro" style={{ fontSize: 12 }}>{q.help}</p>}
+                      {q.type === 'single' && (
+                        <div className="pills">
+                          {q.options.map((o) => (
+                            <button key={o} type="button" className={`pill ${state.qa[q.id] === o ? 'selected' : ''}`} onClick={() => answerSingle(q.id, o)}>{o}</button>
+                          ))}
+                        </div>
+                      )}
+                      {q.type === 'multi' && (
+                        <div className="docs" style={{ border: 'none', paddingTop: 0, marginTop: 10 }}>
+                          {q.options.map((o) => {
+                            const arr = state.qa[q.id] || [];
+                            return (
+                              <label className="doc" key={o}>
+                                <input type="checkbox" checked={arr.includes(o)} onChange={(e) => answerMulti(q.id, o, e.target.checked)} />{o}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                      {q.type === 'text' && (
+                        <label className="field" style={{ marginTop: 8 }}>
+                          <input type="text" placeholder={q.placeholder || ''} value={state.qa[q.id] || ''} onChange={(e) => answerText(q.id, e.target.value)} />
+                        </label>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div className="actions">
+                  <button type="button" className="back" onClick={backFromQuestions}>← Back</button>
+                  <button type="button" className="next" onClick={() => go(6)}>Continue →</button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {current === 6 && flow && (() => {
+            const docs = flow.documents.filter((d) => !d.showIf || d.showIf(ctx));
+            return (
+              <div className="content">
+                <div className="body">
+                  <p className="eyebrow">Documents</p>
+                  <h1>Which documents do you have?</h1>
+                  <p className="intro" style={{ fontSize: 12 }}>Select all that apply. Nothing is uploaded in this demonstration.</p>
+                  <div className="docs" style={{ border: 'none', paddingTop: 0 }}>
+                    {docs.length ? docs.map((d) => (
+                      <label className="doc" key={d.id}>
+                        <input type="checkbox" checked={isDocChecked(d)} onChange={() => toggleDoc(d)} />{d.label}
+                      </label>
+                    )) : <p className="intro">No specific documents are needed at this stage.</p>}
+                  </div>
+                </div>
+                <div className="actions">
+                  <button type="button" className="back" onClick={() => go(5)}>← Back</button>
+                  <button type="button" className="next" onClick={() => go(7)}>Prepare my case summary →</button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {current === 7 && flow && (() => {
+            const cat = legalCategories.find((c) => c.id === state.category);
+            const sit = (situationsByCategory[state.category] || []).find((s) => s.id === state.situation);
+            const profileLine = composeProfileLine(state);
+            const concernParts = [cat ? cat.title : null, sit ? sit.label : (state.flowKey === 'unknown_freeform' ? 'Not yet classified' : null)].filter(Boolean);
+            const visibleQs = flow.questions.filter((q) => !q.showIf || q.showIf(ctx));
+            const qaEntries = visibleQs
+              .map((q) => ({ q, v: state.qa[q.id] }))
+              .filter(({ v }) => v !== undefined && v !== '' && !(Array.isArray(v) && v.length === 0));
+            const storyLine = state.flowKey === 'unknown_freeform' && state.qa.story;
+            const guessCategory = state.flowKey === 'unknown_freeform' ? classifyFreeform(state.qa.story) : null;
+            const urgency = computeUrgency(state);
+            const urgencyColor = urgency === 'Urgent' ? '#a44438' : (urgency === 'Priority review' ? '#8a6a1e' : '#1f3d29');
+            const route = recommendRoute(state);
+            const docs = flow.documents.filter((d) => !d.showIf || d.showIf(ctx));
+            return (
+              <div className="content">
+                <div className="body">
+                  <p className="eyebrow">Your case summary</p>
+                  <h1>Here's what we understood.</h1>
+                  <p className="intro">We have organised the information you provided into a simple assistance note. A qualified professional must examine your documents before giving advice.</p>
+                  <div className="summarygrid">
+                    <article className="summarybox">
+                      <span className="tag">PRELIMINARY ASSISTANCE CLASSIFICATION</span>
+                      <small>CASE REFERENCE</small><h3>{state.caseRef}</h3>
+                      <div className="data">
+                        <div><small>Your profile</small><b>{profileLine}</b></div>
+                        <div><small>Your concern</small><b>{concernParts.join(' → ')}</b></div>
+                        <div><small>Urgency</small><b style={{ color: urgencyColor }}>{urgency}</b></div>
+                        <div><small>Recommended support route</small><b>{route}</b></div>
+                      </div>
+                      {guessCategory && (
+                        <div className="greenbox"><b>Likely category</b><p>Based on what you told us, this may relate to <b>{guessCategory}</b>. A coordinator will confirm this.</p></div>
+                      )}
+                      {storyLine && (
+                        <div className="greenbox"><b>What you told us</b><p>{state.qa.story}</p></div>
+                      )}
+                      {qaEntries.length > 0 && (
+                        <div className="greenbox">
+                          <b>What you told us</b>
+                          {qaEntries.map(({ q, v }) => (
+                            <div key={q.id}><small>{q.prompt}</small><b>{Array.isArray(v) ? v.join(', ') : v}</b></div>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+                    <div>
+                      <article className="summarybox">
+                        <h3>Documents to arrange</h3>
+                        {docs.length ? docs.map((d) => <p key={d.id}>{isDocChecked(d) ? '✓' : '○'} {d.label}</p>) : <p>No specific documents needed at this stage.</p>}
+                      </article>
+                      <article className="summarybox source" style={{ marginTop: 14 }}>
+                        <h3>Verified source approach</h3>
+                        <p>This is a preliminary assistance classification, checked against approved service law, pension regulations and official sources where applicable. It is not legal advice, and no outcome is guaranteed.</p>
+                      </article>
+                    </div>
+                  </div>
+                  <div className="notice" style={{ background: 'var(--c-tint-amber, #fffaf0)', borderColor: '#eed9ad', color: 'var(--c-amber, #695a38)' }}>
+                    <strong>Important:</strong> Your answers suggest that this matter may require review by a qualified professional. Time limits may apply for appeals and representations — please do not delay professional review.
+                  </div>
+                </div>
+                <div className="actions">
+                  <button type="button" className="back" onClick={() => go(6)}>← Back</button>
+                  <button type="button" className="next" onClick={() => go(8)}>Connect with support desk →</button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {current === 8 && (
+            <Screen8 state={state} go={go} exitAssistance={exitAssistance} />
+          )}
+        </section>
+      </main>
+    </div>
+  );
+};
+
+const Screen8 = ({ state, go, exitAssistance }) => {
+  const [contactMethod, setContactMethod] = useState('phone');
+  const [consent, setConsent] = useState(true);
+  const [mobile, setMobile] = useState('');
+  const [email, setEmail] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleSubmit = async () => {
+    if (!consent) {
+      setError('Please consent to proceed.');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { error: dbError } = await supabase.from('legal_aid_queries').insert({
+        case_ref: state.caseRef,
+        profile: state.profile,
+        service: state.service,
+        category: state.category,
+        situation: state.situation,
+        urgency: computeUrgency(state),
+        route: recommendRoute(state),
+        qa_summary: state.qa || {},
+        contact_method: contactMethod,
+        mobile: mobile || null,
+        email: email || null,
+        consent,
+        status: 'new',
+        user_id: user?.id || null,
+      });
+      if (dbError) throw dbError;
+      setSubmitted(true);
+    } catch (err) {
+      console.error('[LegalAidCell] Submission error:', err);
+      setError('Failed to submit your query. Please try again or contact support@veernxt.in');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (submitted) {
+    return (
+      <div className="content">
+        <div className="body" style={{ textAlign: 'center', padding: '3rem 2rem' }}>
+          <div style={{ fontSize: 64, marginBottom: 16 }}>✅</div>
+          <p className="eyebrow" style={{ color: 'var(--c-green, #4b6b32)', justifyContent: 'center', display: 'flex' }}>Request Submitted</p>
+          <h1 style={{ fontSize: '1.8rem', marginBottom: '1rem' }}>Your case has been registered.</h1>
+          <p className="intro" style={{ maxWidth: 480, margin: '0 auto 1.5rem' }}>
+            Your Case Reference is <strong>{state.caseRef}</strong>. A VeerNXT Legal Support Desk coordinator will reach out to you shortly via your preferred contact method.
+          </p>
+          <div style={{ background: 'var(--c-tint-green, #f0f7ea)', border: '1.5px solid #b6d9a0', borderRadius: 2, padding: '1.25rem 1.5rem', maxWidth: 400, margin: '0 auto 2rem', textAlign: 'left' }}>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--c-green, #2d5a27)', fontWeight: 700, marginBottom: 6 }}>What happens next?</p>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--c-green, #3d6b33)', lineHeight: 1.8 }}>
+              <li>Our coordinator reviews your case summary</li>
+              <li>They contact you via {contactMethod === 'phone' ? 'phone call' : 'WhatsApp'}</li>
+              <li>You're connected with the right legal professional</li>
+            </ul>
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--c-ink-5, #94a3b8)', margin: '1rem auto 0', maxWidth: 400 }}>
+            🔒 Your information is private and shared only with authorised VeerNXT support personnel.
+          </p>
+        </div>
+        <div className="actions">
+          <span />
+          <button type="button" className="next" onClick={exitAssistance}>Done →</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="content">
+      <div className="body">
+        <p className="eyebrow">VeerNXT Legal Support Desk</p>
+        <h1>How would you like us to contact you?</h1>
+        <p className="intro">Case reference: <strong>{state.caseRef}</strong>. A Case Care Coordinator will speak with you, help organise your documents and connect you with a suitable legal professional. The coordinator will not give legal advice.</p>
+        <div className="choices">
+          <button type="button" className={`choice ${contactMethod === 'phone' ? 'selected' : ''}`} onClick={() => setContactMethod('phone')}>
+            <span>☎</span><strong>Request a phone call</strong><small>Preferred time: Today, 4:00 to 6:00 PM</small>
+          </button>
+          <button type="button" className={`choice ${contactMethod === 'whatsapp' ? 'selected' : ''}`} onClick={() => setContactMethod('whatsapp')}>
+            <span>◉</span><strong>Continue on WhatsApp</strong><small>Receive your case reference and secure instructions.</small>
+          </button>
+        </div>
+        <div className="fields" style={{ marginTop: 22, gap: 12, display: 'flex', flexDirection: 'column' }}>
+          <label className="field">
+            Mobile number
+            <input
+              type="tel"
+              placeholder="+91 98765 43210"
+              value={mobile}
+              onChange={(e) => setMobile(e.target.value)}
+            />
+          </label>
+          <label className="field">
+            Email address <span style={{ fontWeight: 400, color: 'var(--c-ink-5, #94a3b8)', fontSize: 12 }}>(so we can send you case updates)</span>
+            <input
+              type="email"
+              placeholder="your@email.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </label>
+        </div>
+        <label className="consent" style={{ marginTop: 20 }}>
+          <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
+          I consent to VeerNXT contacting me and sharing this case summary only with authorised support personnel or the legal professional assigned to me.
+        </label>
+        {error && (
+          <div className="notice" style={{ background: 'var(--c-tint-red, #fff0f0)', borderColor: '#f5c6cb', color: 'var(--c-red, #7b2230)', marginTop: 12 }}>
+            {error}
+          </div>
+        )}
+        <button
+          type="button"
+          className="confirm"
+          onClick={handleSubmit}
+          disabled={submitting}
+          style={{ opacity: submitting ? 0.7 : 1, cursor: submitting ? 'not-allowed' : 'pointer' }}
+        >
+          {submitting ? 'Submitting...' : 'Confirm callback request'}
+        </button>
+        <p className="prototype">🔒 Your information is encrypted and only accessible to authorised VeerNXT support personnel.</p>
+      </div>
+      <div className="actions">
+        <button type="button" className="back" onClick={() => go(7)}>← Back</button>
+        <span />
+      </div>
+    </div>
+  );
+};
+/* ────────────────────────────────────────────────────────────
+   MyHistory — mobile-only banner shown above the step panel
+   (Sidebar version is rendered inline in the aside for desktop)
+──────────────────────────────────────────────────────────── */
+const MyHistory = ({ entries, loading }) => {
+  if (loading) return null;
+  if (!entries || entries.length === 0) return null;
+
+  return (
+    <div style={{
+      display: 'none', /* hidden on desktop — sidebar handles it */
+    }} className="my-history-mobile">
+      <div style={{ padding: '12px 16px', background: 'rgba(255,255,255,0.04)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+        <p style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#e3c677', margin: '0 0 8px' }}>My Previous Queries</p>
+        <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+          {entries.map((h) => {
+            const sm = STATUS_STYLE[h.status] || STATUS_STYLE.new;
+            return (
+              <div key={h.id} style={{ flexShrink: 0, background: 'rgba(255,255,255,0.05)', borderRadius: 2, padding: '6px 10px', border: '1px solid rgba(255,255,255,0.08)', minWidth: 140 }}>
+                <div style={{ fontFamily: 'monospace', fontSize: 11, fontWeight: 700, color: '#e3c677', marginBottom: 2 }}>{h.case_ref}</div>
+                <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)', marginBottom: 4 }}>{CATEGORY_LABELS[h.category] || h.category}</div>
+                <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 2, color: sm.color, background: sm.bg, border: `1px solid ${sm.border}` }}>{sm.label}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default LegalAidCell;

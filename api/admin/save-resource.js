@@ -1,0 +1,2289 @@
+import { createClient } from '@supabase/supabase-js';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, ListObjectsV2Command, DeleteObjectsCommand, CopyObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import mammoth from 'mammoth';
+import { getS3Client, uploadToR2, generateResourceId } from '../../scripts/lib/ingest-drive-content.js';
+import { parseDocxToSemanticModelNode } from '../../scripts/lib/docxParser.mjs';
+import { parseHtmlToBlocks, generateId as generateIntroBlockId, STYLE_MAP as INTRO_STYLE_MAP } from '../../scripts/convert_docx_intros_to_blocks.mjs';
+
+const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+// Book-content-editor actions (type: 'books-*') live in this same file
+// rather than their own api/admin/books/*.js functions because Vercel
+// Hobby caps a deployment at 12 serverless functions and api/ was already
+// at that cap (see api/admin/admins.js's docstring for the same reasoning).
+function checkAdminSecret(req, res) {
+  const expectedSecret = process.env.ADMIN_API_SECRET;
+  if (!expectedSecret || req.headers['x-admin-api-secret'] !== expectedSecret) {
+    res.status(401).json({ ok: false, error: 'Unauthorized' });
+    return false;
+  }
+  return true;
+}
+
+const BOOK_CATEGORIES = ['Guide', 'Precis', 'Intro'];
+
+// Guide/Precis legitimately have many resources rows sharing one
+// (category, title) -- the same book linked from many exams -- so every
+// action on "this book" groups and mutates by title. Intro resources
+// don't share that pattern: they're independently-authored, exam-specific
+// documents that often happen to carry a generic filename-derived title
+// like "Introduction" or "1.MTS_INTRO" across dozens of unrelated exams
+// (see docs/status_report.md §48.1's mislinked-Introduction audit).
+// Grouping/mutating Intro rows by title would silently merge unrelated
+// exams' content in the list, or worse, rename/archive/delete every one
+// of them at once when only one was meant. Intro books are always scoped
+// to exactly their own resource_id instead.
+const TITLE_DEDUPED_CATEGORIES = ['Guide', 'Precis'];
+function isTitleDedupedCategory(category) {
+  return TITLE_DEDUPED_CATEGORIES.includes(category);
+}
+
+// In-memory cache for books-list responses (TTL: 60s)
+const booksListCache = new Map();
+const BOOKS_CACHE_TTL_MS = 60 * 1000;
+
+function invalidateBooksCache() {
+  booksListCache.clear();
+}
+
+// R2 is the only source of truth for book content -- these actions read
+// and write Cloudflare R2 + the resources table directly, nothing on
+// local disk, so they work identically whether this runs on `npm run dev`
+// or on a real Vercel deployment. (An earlier version of this editor
+// treated public/books on local disk as the source of truth with R2 as a
+// "publish" target; that's gone now -- the content team edits straight
+// against what's actually live, from wherever the admin site is deployed.)
+
+function getSupabaseAdmin() {
+  return createClient(supabaseUrl, supabaseServiceKey || process.env.VITE_SUPABASE_ANON_KEY);
+}
+
+/**
+ * POST /api/admin/save-resource with { type: 'docx-preview-convert', fileName, dataBase64, category }
+ *
+ * Runs one uploaded .docx through a parser chosen by `category`, and
+ * returns the resulting book/chapters/blocks directly in the response --
+ * no R2 upload, no Supabase write, nothing persisted. First step of
+ * PublishContentPage.jsx's upload -> preview -> publish flow (see
+ * content-publish below for the second step).
+ *
+ * category 'Guide'/'Precis' (or omitted): the same non-AI mechanical
+ * parser scripts/convert_docx_books_to_blocks.mjs and scripts/content/
+ * batch_enrich_books.mjs's own first step already use
+ * (parseDocxToSemanticModelNode, scripts/lib/docxParser.mjs) -- a
+ * multi-chapter book, splitting on Word's Heading 1 style.
+ *
+ * category 'Intro': a DIFFERENT parser (mammoth + the table-aware
+ * scripts/convert_docx_intros_to_blocks.mjs) instead of
+ * parseDocxToSemanticModelNode -- an Introduction is "a single simple
+ * document" (see that script's own docstring), so Word H1/H2/H3 headings
+ * become heading blocks at different levels rather than splitting into
+ * new chapters, and <w:tbl> tables are parsed into real table blocks (the
+ * book parser above never looks at tables at all). Same `{ buffer }`
+ * mammoth call docxParser.mjs already uses in this same function.
+ *
+ * Input is either `dataBase64` (small files -- a deployed Vercel function
+ * caps the request body at ~4.5MB, base64 adds ~33%) or `tmpKey`, the R2
+ * key of a file the browser already uploaded directly via the presigned
+ * URL from 'docx-upload-url' below, which has no such cap (real master
+ * book docx files run up to ~39MB). The temp object is deleted once read.
+ */
+const DOCX_TMP_PREFIX = 'tmp/publish-uploads/';
+
+function getR2Config() {
+  const { R2_ACCOUNT_ID, R2_BUCKET_NAME, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY } = process.env;
+  if (!R2_ACCOUNT_ID || !R2_BUCKET_NAME || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY) return null;
+  return { bucket: R2_BUCKET_NAME, s3: getS3Client() };
+}
+
+/**
+ * POST /api/admin/save-resource with { type: 'docx-upload-url' }
+ * Returns { uploadUrl, key }: a short-lived presigned PUT URL for a
+ * throwaway object under tmp/publish-uploads/, so the browser can send a
+ * large docx straight to R2 instead of through this function's body cap.
+ */
+async function handleDocxUploadUrl(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const r2 = getR2Config();
+  if (!r2) return res.status(500).json({ ok: false, error: 'Server misconfiguration: R2 credentials not set' });
+  try {
+    const key = `${DOCX_TMP_PREFIX}${crypto.randomUUID()}.docx`;
+    const uploadUrl = await getSignedUrl(
+      r2.s3,
+      new PutObjectCommand({ Bucket: r2.bucket, Key: key, ContentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }),
+      { expiresIn: 600 },
+    );
+    return res.status(200).json({ ok: true, uploadUrl, key });
+  } catch (e) {
+    console.error('[admin/save-resource:docx-upload-url] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+async function handleDocxPreviewConvert(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { fileName, dataBase64, tmpKey, category } = req.body || {};
+  if (!fileName || (!dataBase64 && !tmpKey)) {
+    return res.status(400).json({ ok: false, error: 'Missing fileName or file data' });
+  }
+  if (tmpKey && (!tmpKey.startsWith(DOCX_TMP_PREFIX) || tmpKey.includes('..'))) {
+    return res.status(400).json({ ok: false, error: 'Invalid tmpKey' });
+  }
+  let r2 = null;
+  try {
+    let buffer;
+    if (tmpKey) {
+      r2 = getR2Config();
+      if (!r2) return res.status(500).json({ ok: false, error: 'Server misconfiguration: R2 credentials not set' });
+      const obj = await r2.s3.send(new GetObjectCommand({ Bucket: r2.bucket, Key: tmpKey }));
+      buffer = Buffer.from(await obj.Body.transformToByteArray());
+    } else {
+      buffer = Buffer.from(dataBase64, 'base64');
+    }
+    if (category === 'Intro') {
+      const result = await mammoth.convertToHtml({ buffer }, { styleMap: INTRO_STYLE_MAP });
+      const { blocks } = parseHtmlToBlocks(result.value);
+      const title = fileName.replace(/\.[^/.]+$/, '');
+      const book = { title, chapters: [{ id: generateIntroBlockId(), title, order: 1, blocks }] };
+      return res.status(200).json({ ok: true, book });
+    }
+    const { book } = await parseDocxToSemanticModelNode(buffer, fileName);
+    return res.status(200).json({ ok: true, book });
+  } catch (e) {
+    console.error('[admin/save-resource:docx-preview-convert] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  } finally {
+    if (r2 && tmpKey) {
+      r2.s3.send(new DeleteObjectCommand({ Bucket: r2.bucket, Key: tmpKey }))
+        .catch((e) => console.error('[admin/save-resource:docx-preview-convert] temp cleanup failed:', e.message));
+    }
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with
+ * { type: 'content-publish', category, fileName, book, examId?, overwrite? }
+ *
+ * Publishes an already-converted book/Introduction (the exact
+ * { title, chapters } shape docx-preview-convert returns above -- the docx
+ * itself isn't resent, just its already-parsed blocks) as a fresh
+ * `resources` row. Built because the content team otherwise has no way to
+ * turn a new docx into a live resource short of a developer running a CLI
+ * script: see docs/status_report.md §52-53 for why -- a system-wide scan
+ * found zero unconverted-but-real Intro docx left anywhere, so closing
+ * content gaps depends entirely on the content team writing new ones.
+ *
+ * Intro and Guide/Precis attach to exams differently, so only the resource
+ * creation (R2 upload + `resources` insert, works for any chapter count)
+ * is shared here:
+ *   - category 'Intro' is exam-specific 1:1, never more than one exam --
+ *     `examId` is optional (the exam it belongs to may not exist in the
+ *     catalog yet); when given, this action also upserts `lc_exam_intro`
+ *     server-side (never a silent overwrite: 409 `ALREADY_HAS_INTRO`
+ *     unless `overwrite: true`, same principle link_intros_to_exams.mjs
+ *     already enforces). When omitted, the resource is created unlinked,
+ *     to be attached later via the exam's own Resources panel once a
+ *     matching exam exists.
+ *   - category 'Guide'/'Precis' books are legitimately shared across many
+ *     exams (the same book linked from dozens of them), so this action
+ *     just creates the resource and returns its id -- the client attaches
+ *     it to whichever exam(s) were picked via a direct
+ *     `lc_exam_resource_map` insert, the exact same table/shape
+ *     ExamResourcesPanel.jsx's own "Add Resource" flow already uses
+ *     (that table already grants browser/anon writes; `resources` and
+ *     `lc_exam_intro` don't, hence this server action for those).
+ *
+ * Mirrors link_intros_to_exams.mjs's own resourceRow/introRow shapes (its
+ * lines ~422-460) and handleBooksCreate's resource-defaults convention
+ * above, against `lc_exams` (the browser-reachable exam catalog
+ * `lc_exam_intro.exam_id` itself FKs to) rather than the service-role-only
+ * `exams` table those CLI scripts use.
+ */
+async function handleContentPublish(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { category, examId, fileName, book, overwrite } = req.body || {};
+  const chapters = book?.chapters || [];
+  if (!BOOK_CATEGORIES.includes(category) || !fileName || !chapters.length || !chapters.some((c) => c.blocks?.length)) {
+    return res.status(400).json({ ok: false, error: 'Missing/invalid category, fileName, or a converted chapter with blocks' });
+  }
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+  const publicUrl = getR2PublicUrl();
+  const bucket = getR2Bucket();
+  if (!publicUrl || !bucket) return res.status(500).json({ ok: false, error: 'Server misconfiguration: R2 env vars not set' });
+
+  try {
+    const supabase = getSupabaseAdmin();
+
+    let examName = '';
+    let conductingBody = '';
+    if (category === 'Intro' && examId) {
+      const { data: exam, error: examError } = await supabase
+        .from('lc_exams')
+        .select('id, name, conducting_body:lc_conducting_bodies(name)')
+        .eq('id', examId)
+        .maybeSingle();
+      if (examError) throw new Error(examError.message);
+      if (!exam) return res.status(404).json({ ok: false, error: 'Exam not found' });
+      examName = exam.name || '';
+      conductingBody = exam.conducting_body?.name || '';
+
+      // Never a silent overwrite -- checked against both places a live
+      // intro can come from (see useExamContent.js's own fallback order).
+      const [{ data: introRows }, { data: mapRows }] = await Promise.all([
+        supabase.from('lc_exam_intro').select('resource_id').eq('exam_id', examId).limit(1),
+        supabase.from('lc_exam_resource_map').select('resource_id').eq('exam_id', examId).eq('category', 'Intro').limit(1),
+      ]);
+      const existingResourceId = introRows?.[0]?.resource_id || mapRows?.[0]?.resource_id || null;
+      if (existingResourceId && !overwrite) {
+        const { data: existingResource } = await supabase.from('resources').select('title').eq('resource_id', existingResourceId).maybeSingle();
+        return res.status(409).json({ ok: false, code: 'ALREADY_HAS_INTRO', existingTitle: existingResource?.title || '(untitled)' });
+      }
+    }
+
+    const resourceId = generateResourceId(fileName, examName, category, '');
+    const prefix = `structured_resources/blocks/${category}/${resourceId}`;
+    const storageBaseUrl = `${publicUrl}/${prefix}/`;
+
+    const metadata = {
+      book_id: genBookId(),
+      title: book.title,
+      source_file: fileName,
+      category,
+      chapter_count: chapters.length,
+      image_count: 0,
+      chapters: chapters.map((ch, i) => ({ title: ch.title, order: ch.order ?? i + 1, enriched: false, blocks_count: ch.blocks.length, file_name: `chapters/chapter-${ch.order ?? i + 1}.json` })),
+    };
+    const s3 = getS3Client();
+    await uploadToR2(s3, bucket, `${prefix}/metadata.json`, Buffer.from(JSON.stringify(metadata, null, 2)), 'application/json');
+    for (const ch of chapters) {
+      await uploadToR2(s3, bucket, `${prefix}/chapters/chapter-${ch.order}.json`, Buffer.from(JSON.stringify(ch, null, 2)), 'application/json');
+    }
+
+    // Same is_freemium/is_locked convention handleBooksCreate above uses:
+    // Intro is always free/unlocked, Guide/Precis default to paid/locked.
+    const { error: resErr } = await supabase.from('resources').insert({
+      resource_id: resourceId,
+      file_hash: crypto.createHash('sha256').update(JSON.stringify(chapters)).digest('hex'),
+      source_file: fileName,
+      title: book.title,
+      exam_name: examName,
+      subject: 'General',
+      category,
+      conducting_body: conductingBody,
+      website_url: '',
+      chapter_count: chapters.length,
+      format: 'blocks',
+      storage_base_url: storageBaseUrl,
+      metadata_url: `${storageBaseUrl}metadata.json`,
+      thumbnail_url: null,
+      is_freemium: category === 'Intro',
+      is_locked: category !== 'Intro',
+      status: 'Published',
+      updated_at: new Date().toISOString(),
+    });
+    if (resErr) throw new Error(resErr.message);
+
+    if (category !== 'Intro' || !examId) {
+      invalidateBooksCache();
+      return res.status(200).json({ ok: true, resourceId });
+    }
+
+    const { error: introErr } = await supabase.from('lc_exam_intro').upsert(
+      { exam_id: examId, resource_id: resourceId, manual_title: null, manual_body: null, source: 'auto', updated_at: new Date().toISOString() },
+      { onConflict: 'exam_id' }
+    );
+    if (introErr) throw new Error(introErr.message);
+
+    invalidateBooksCache();
+    return res.status(200).json({ ok: true, resourceId });
+  } catch (e) {
+    console.error('[admin/save-resource:content-publish] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+function getR2PublicUrl() {
+  return process.env.R2_PUBLIC_URL;
+}
+
+function getR2Bucket() {
+  return process.env.R2_BUCKET_NAME;
+}
+
+// resources.title has heavy pre-existing duplication (the same book
+// linked from many exams, one row per link -- see books-list's own
+// comment), so every lookup here matches by title, not row id. ilike is
+// used for a case-insensitive match; % and _ are escaped first so a title
+// containing either character doesn't act as a SQL wildcard.
+function escapeIlike(str) {
+  return str.trim().replace(/[\\%_]/g, '\\$&');
+}
+
+// Paginated: some titles in resources have 1000+ duplicate rows, well
+// past PostgREST's per-request row cap.
+async function fetchRowsByTitle(supabase, category, title) {
+  const escaped = escapeIlike(title);
+  let rows = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase
+      .from('resources')
+      .select('resource_id,title,category,storage_base_url,format,chapter_count,status')
+      .eq('category', category)
+      .ilike('title', escaped)
+      .range(from, from + 999);
+    if (error) throw new Error(error.message);
+    rows = rows.concat(data);
+    if (data.length < 1000) break;
+  }
+  return rows;
+}
+
+// Every resources row this "book" actually spans. Title-deduped
+// categories (Guide/Precis) genuinely group by title; Intro never does
+// (see TITLE_DEDUPED_CATEGORIES) -- an Intro book is always exactly the
+// one row matching `row`, regardless of what its title happens to be.
+async function fetchBookRows(supabase, row) {
+  if (!isTitleDedupedCategory(row.category)) return [row];
+  return fetchRowsByTitle(supabase, row.category, row.title);
+}
+
+// Scopes a resources-table query (an .update(...) or .delete() builder)
+// to every row this book spans, same rule as fetchBookRows -- title+category
+// for Guide/Precis, this one resource_id only for Intro. Use for every
+// mutation that should apply to "this book" rather than "this row".
+function bookRowsFilter(query, row) {
+  return isTitleDedupedCategory(row.category)
+    ? query.eq('category', row.category).ilike('title', escapeIlike(row.title))
+    : query.eq('resource_id', row.resource_id);
+}
+
+// Of however many resources rows share a title, picks the storage
+// location most of them already agree on (or the only one, in the common
+// case). Every books-save-chapter/books-delete call also re-points every
+// row in the group at whatever this returns, so duplicate rows converge
+// on one location a little more each time a book is touched here, instead
+// of the group drifting further apart.
+function pickCanonicalStorageBaseUrl(rows) {
+  const counts = new Map();
+  for (const r of rows) {
+    if (!r.storage_base_url) continue;
+    counts.set(r.storage_base_url, (counts.get(r.storage_base_url) || 0) + 1);
+  }
+  let best = null;
+  let bestCount = 0;
+  for (const [url, count] of counts) {
+    if (count > bestCount) {
+      best = url;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+// storage_base_url is a full public URL (e.g.
+// "https://pub-xxx.r2.dev/structured_resources/blocks/Guide/<id>/");
+// returns just the R2 object key prefix, no trailing slash. Returns null
+// if the URL doesn't start with this deployment's own R2_PUBLIC_URL --
+// this project migrated R2 accounts once already (R2_OLD_* env vars still
+// exist), so a stale row could point at the old bucket, and treating that
+// as "can't resolve" is much safer than guessing.
+function prefixFromStorageBaseUrl(storageBaseUrl, publicUrl) {
+  if (!storageBaseUrl || !publicUrl) return null;
+  const base = publicUrl.replace(/\/$/, '') + '/';
+  if (!storageBaseUrl.startsWith(base)) return null;
+  return storageBaseUrl.slice(base.length).replace(/\/$/, '');
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
+  return res.json();
+}
+
+async function listR2Keys(s3, bucket, prefix) {
+  const keys = [];
+  let continuationToken;
+  do {
+    const resp = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: `${prefix}/`, ContinuationToken: continuationToken }));
+    for (const obj of resp.Contents || []) keys.push(obj.Key);
+    continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return keys;
+}
+
+async function deleteR2Keys(s3, bucket, keys) {
+  for (let i = 0; i < keys.length; i += 1000) {
+    const batch = keys.slice(i, i + 1000);
+    await s3.send(new DeleteObjectsCommand({ Bucket: bucket, Delete: { Objects: batch.map((Key) => ({ Key })) } }));
+  }
+}
+
+function genBookId() {
+  return Math.random().toString(36).slice(2, 9);
+}
+
+// Applies literal find->replace pairs to every string value found anywhere
+// in a JSON-shaped value (recursing through objects/arrays). Used by
+// books-duplicate to rebrand a cloned book's text -- e.g. turning a
+// Bihar_GS clone into Jharkhand_GS by replacing "Bihar" with "Jharkhand"
+// across every chapter, the same rebrand step scripts/duplicate_enriched_books.mjs
+// did by hand for one specific set of books.
+function deepReplaceStrings(value, pairs) {
+  if (typeof value === 'string') {
+    let out = value;
+    for (const { find, replace } of pairs) {
+      if (find) out = out.split(find).join(replace ?? '');
+    }
+    return out;
+  }
+  if (Array.isArray(value)) return value.map((v) => deepReplaceStrings(v, pairs));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = deepReplaceStrings(v, pairs);
+    return out;
+  }
+  return value;
+}
+
+function replaceTextInValue(value, findStr, replaceStr, { matchCase = false, matchWholeWord = false } = {}) {
+  if (!findStr || typeof findStr !== 'string') return { value, count: 0 };
+  const escaped = findStr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = matchWholeWord ? `\\b${escaped}\\b` : escaped;
+  const flags = matchCase ? 'g' : 'gi';
+  const regex = new RegExp(pattern, flags);
+
+  let count = 0;
+  function walk(node) {
+    if (typeof node === 'string') {
+      const matches = node.match(regex);
+      if (matches) {
+        count += matches.length;
+        return node.replace(regex, () => (replaceStr ?? ''));
+      }
+      return node;
+    }
+    if (Array.isArray(node)) {
+      return node.map(walk);
+    }
+    if (node && typeof node === 'object') {
+      const out = {};
+      for (const [k, v] of Object.entries(node)) {
+        if (k === 'id' || k === 'type' || k === 'order') {
+          out[k] = v;
+        } else {
+          out[k] = walk(v);
+        }
+      }
+      return out;
+    }
+    return node;
+  }
+
+  const result = walk(value);
+  return { value: result, count };
+}
+
+/**
+ * POST /api/admin/save-resource with { type: 'books-list', category? }
+ *
+ * Lists books by grouping resources rows by (title, category) for Guide/Precis
+ * and by resource_id for Intro. Supports optional category filtering for fast
+ * scoped queries and in-memory caching.
+ */
+async function handleBooksList(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+
+  const reqCategory = req.body?.category;
+  const categoriesToFetch = (reqCategory && BOOK_CATEGORIES.includes(reqCategory))
+    ? [reqCategory]
+    : BOOK_CATEGORIES;
+
+  const cacheKey = reqCategory && BOOK_CATEGORIES.includes(reqCategory) ? reqCategory : 'all';
+  const cached = booksListCache.get(cacheKey);
+  const now = Date.now();
+  if (cached && (now - cached.timestamp < BOOKS_CACHE_TTL_MS)) {
+    return res.status(200).json({ ok: true, books: cached.books, cached: true });
+  }
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const selectFields = 'resource_id,title,category,storage_base_url,chapter_count,status,level,state_ut,conducting_body';
+
+    const fetchCategoryRows = async (cat) => {
+      const { data: firstBatch, count, error } = await supabase
+        .from('resources')
+        .select(selectFields, { count: 'exact' })
+        .eq('category', cat)
+        .eq('format', 'blocks')
+        .range(0, 999);
+
+      if (error) throw new Error(error.message);
+      let catRows = firstBatch || [];
+
+      if (count && count > 1000) {
+        const promises = [];
+        for (let from = 1000; from < count; from += 1000) {
+          promises.push(
+            supabase
+              .from('resources')
+              .select(selectFields)
+              .eq('category', cat)
+              .eq('format', 'blocks')
+              .range(from, from + 999)
+          );
+        }
+        const results = await Promise.all(promises);
+        for (const r of results) {
+          if (r.error) throw new Error(r.error.message);
+          if (r.data) catRows = catRows.concat(r.data);
+        }
+      }
+      return catRows;
+    };
+
+    // Real exam links live in lc_exam_resource_map (one resources row can be
+    // linked to hundreds of exams) -- NOT in how many resources rows share a
+    // title, which is what duplicateRowCount below measures. Fetched
+    // separately so the table can show the true number of exams a book serves.
+    const fetchMapRows = async (cat) => {
+      let all = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await supabase
+          .from('lc_exam_resource_map')
+          .select('exam_id,resource_id')
+          .eq('category', cat)
+          .range(from, from + 999);
+        if (error) throw new Error(error.message);
+        all = all.concat(data || []);
+        if (!data || data.length < 1000) break;
+      }
+      if (cat === 'Intro') {
+        // An Intro is also linked straight through lc_exam_intro.
+        for (let from = 0; ; from += 1000) {
+          const { data, error } = await supabase
+            .from('lc_exam_intro')
+            .select('exam_id,resource_id')
+            .not('resource_id', 'is', null)
+            .range(from, from + 999);
+          if (error) throw new Error(error.message);
+          all = all.concat(data || []);
+          if (!data || data.length < 1000) break;
+        }
+      }
+      return all;
+    };
+
+    const [catResults, mapResults] = await Promise.all([
+      Promise.all(categoriesToFetch.map(fetchCategoryRows)),
+      Promise.all(categoriesToFetch.map(fetchMapRows)),
+    ]);
+    const rows = catResults.flat();
+    const examsByResourceId = new Map();
+    for (const m of mapResults.flat()) {
+      if (!examsByResourceId.has(m.resource_id)) examsByResourceId.set(m.resource_id, new Set());
+      examsByResourceId.get(m.resource_id).add(m.exam_id);
+    }
+
+    const groups = new Map();
+    for (const r of rows) {
+      if (!r.title) continue;
+      const key = isTitleDedupedCategory(r.category)
+        ? `${r.category}::${r.title.trim().toLowerCase()}`
+        : `${r.category}::id::${r.resource_id}`;
+      if (!groups.has(key)) groups.set(key, { title: r.title.trim(), category: r.category, rows: [] });
+      groups.get(key).rows.push(r);
+    }
+
+    let issuesByTitle = null;
+    try {
+      const reportPath = path.resolve(process.cwd(), 'content-issues-report.json');
+      if (fs.existsSync(reportPath)) {
+        issuesByTitle = {};
+        const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+        for (const issue of report.issues || []) {
+          const key = `${issue.category}::${issue.book?.trim().toLowerCase()}`;
+          if (!issuesByTitle[key]) issuesByTitle[key] = { high: 0, medium: 0, low: 0 };
+          issuesByTitle[key][issue.severity] = (issuesByTitle[key][issue.severity] || 0) + 1;
+        }
+      }
+    } catch (e) {
+      console.error('[admin/save-resource:books-list] Failed to read content-issues-report.json:', e.message);
+    }
+
+    const publicUrl = getR2PublicUrl();
+    const books = [];
+    for (const group of groups.values()) {
+      const canonicalUrl = pickCanonicalStorageBaseUrl(group.rows);
+      if (!canonicalUrl || !prefixFromStorageBaseUrl(canonicalUrl, publicUrl)) continue; // broken/unresolvable -- nothing to open
+      // A title can have many duplicate rows at the same canonical URL (the
+      // legacy one-row-per-exam pattern, mostly archived now -- see
+      // docs/status_report.md §60.5) alongside exactly one live one. Picking
+      // whichever row .find() happens to hit first would surface an
+      // archived duplicate as "the book" at random -- prefer a live
+      // (non-Draft/Archived) row at that URL when one exists.
+      const rowsAtCanonicalUrl = group.rows.filter((r) => r.storage_base_url === canonicalUrl);
+      const canonicalRow = rowsAtCanonicalUrl.find((r) => !['draft', 'archived'].includes((r.status || '').toLowerCase())) || rowsAtCanonicalUrl[0] || group.rows[0];
+      const issueKey = `${group.category}::${group.title.toLowerCase()}`;
+      // Distinct exams linked to any row serving this book's content (same
+      // storage_base_url -- the same definition the Link Exams drawer uses; a
+      // book can have several rows, each carrying some of the links).
+      const linkedExamIds = new Set();
+      for (const r of rowsAtCanonicalUrl) for (const id of examsByResourceId.get(r.resource_id) || []) linkedExamIds.add(id);
+      // Archived means the book itself (its live/canonical row) is Draft or
+      // Archived -- not "does this title happen to have an archived
+      // duplicate sitting next to its live row." The old `.some(...)` check
+      // treated every book as archived the moment ANY of its legacy
+      // duplicates got archived, hiding fully-live books from the default
+      // view entirely (found live 2026-09-17: 53 Guide + 29 Precis books).
+      const isArchived = ['draft', 'archived'].includes((canonicalRow.status || '').toLowerCase());
+      books.push({
+        resourceId: canonicalRow.resource_id,
+        title: group.title,
+        category: group.category,
+        level: canonicalRow.level || null,
+        stateUt: canonicalRow.state_ut || null,
+        conductingBody: canonicalRow.conducting_body || null,
+        storageBaseUrl: canonicalUrl,
+        chapterCount: canonicalRow.chapter_count ?? null,
+        duplicateRowCount: group.rows.length,
+        linkedExamCount: linkedExamIds.size,
+        status: isArchived ? 'Draft' : (canonicalRow.status || 'Published'),
+        isArchived,
+        issueCounts: issuesByTitle ? (issuesByTitle[issueKey] || { high: 0, medium: 0, low: 0 }) : null,
+      });
+    }
+
+    booksListCache.set(cacheKey, { timestamp: Date.now(), books });
+    return res.status(200).json({ ok: true, books });
+  } catch (e) {
+    console.error('[admin/save-resource:books-list] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with { type: 'books-get', resourceId }
+ *
+ * Resolves one book's live title/category/canonical storage location by
+ * resource_id -- the chapter browser needs this on a fresh page load
+ * (direct link or refresh), since the category+resourceId in the URL
+ * alone isn't enough to know where its content actually lives in R2.
+ */
+async function handleBooksGet(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { resourceId } = req.body || {};
+  if (!resourceId) return res.status(400).json({ ok: false, error: 'Missing resourceId' });
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: row, error } = await supabase.from('resources').select('resource_id,title,category,storage_base_url,status,format,chapter_count').eq('resource_id', resourceId).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!row) return res.status(404).json({ ok: false, error: 'Book not found' });
+
+    const groupRows = await fetchBookRows(supabase, row);
+    const canonicalUrl = pickCanonicalStorageBaseUrl(groupRows.length ? groupRows : [row]);
+    // Same fix as books-list above: whether THIS row (the one actually
+    // being opened) is archived, not whether some sibling duplicate row
+    // happens to be -- see its comment for the live bug this caused.
+    const isArchived = ['draft', 'archived'].includes((row.status || '').toLowerCase());
+    return res.status(200).json({
+      ok: true,
+      resourceId: row.resource_id,
+      title: row.title,
+      category: row.category,
+      storageBaseUrl: canonicalUrl,
+      format: row.format || (groupRows.find((r) => r.format)?.format) || 'blocks',
+      chapterCount: row.chapter_count ?? (groupRows.find((r) => r.chapter_count != null)?.chapter_count) ?? 1,
+      status: isArchived ? 'Draft' : (row.status || 'Published'),
+      isArchived,
+    });
+  } catch (e) {
+    console.error('[admin/save-resource:books-get] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with
+ * { type: 'books-fetch-content', url?, storageBaseUrl?, resourceId?, fileName? }
+ *
+ * Fetches JSON content (metadata.json or chapter JSON) server-side from R2
+ * to bypass browser CORS and network restrictions.
+ */
+async function handleBooksFetchContent(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { url, storageBaseUrl, resourceId, fileName } = req.body || {};
+  let targetUrl = url;
+
+  if (!targetUrl && storageBaseUrl) {
+    const base = storageBaseUrl.replace(/\/+$/, '') + '/';
+    const rel = (fileName || 'metadata.json').replace(/^\/+/, '');
+    targetUrl = `${base}${rel}`;
+  }
+
+  if (!targetUrl && resourceId) {
+    try {
+      const supabase = getSupabaseAdmin();
+      const { data: row, error } = await supabase.from('resources').select('resource_id,title,category,storage_base_url').eq('resource_id', resourceId).maybeSingle();
+      if (!error && row) {
+        const groupRows = await fetchBookRows(supabase, row);
+        const canonicalUrl = pickCanonicalStorageBaseUrl(groupRows.length ? groupRows : [row]);
+        if (canonicalUrl) {
+          const base = canonicalUrl.replace(/\/+$/, '') + '/';
+          const rel = (fileName || 'metadata.json').replace(/^\/+/, '');
+          targetUrl = `${base}${rel}`;
+        }
+      }
+    } catch (err) {
+      console.warn('[admin/save-resource:books-fetch-content] failed to resolve resourceId:', err.message);
+    }
+  }
+
+  if (!targetUrl) {
+    return res.status(400).json({ ok: false, error: 'Missing url, storageBaseUrl, or valid resourceId' });
+  }
+
+  try {
+    const cleanUrl = targetUrl.includes('?') ? targetUrl : `${targetUrl}?t=${Date.now()}`;
+    const data = await fetchJson(cleanUrl);
+    return res.status(200).json({ ok: true, data });
+  } catch (e) {
+    console.error('[admin/save-resource:books-fetch-content] fetch failed for ' + targetUrl + ':', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with { type: 'books-issues', category, title }
+ *
+ * Returns the full per-block issue list (from content-issues-report.json)
+ * for one book, so the chapter browser can highlight exactly which blocks
+ * scripts/ingest/scan_content_issues.mjs flagged. Kept separate from books-list
+ * so the book-list page doesn't have to download every block-level issue
+ * for all ~122 books just to render per-book counts.
+ */
+async function handleBooksIssues(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { category, title } = req.body || {};
+  if (!BOOK_CATEGORIES.includes(category) || !title) {
+    return res.status(400).json({ ok: false, error: 'Invalid category or title' });
+  }
+
+  try {
+    const reportPath = path.resolve(process.cwd(), 'content-issues-report.json');
+    if (!fs.existsSync(reportPath)) {
+      return res.status(200).json({ ok: true, issues: [], scanned: false });
+    }
+    const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+    const norm = title.trim().toLowerCase();
+    const issues = (report.issues || []).filter((i) => i.category === category && i.book?.trim().toLowerCase() === norm);
+    return res.status(200).json({ ok: true, issues, scanned: true, generatedAt: report.generatedAt });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with { type: 'r2-upload', key, contentType, dataBase64 }
+ *
+ * Proxies a single file to Cloudflare R2 using backend-only env vars.
+ * Used by src/lib/r2Uploader.js — that file used to hold the R2 account ID,
+ * access key, and secret access key as literal strings, which shipped them
+ * into the browser bundle (a live write-credential leak into a public repo).
+ * Gated by the same shared x-admin-api-secret header as the redemption
+ * admin endpoints; not real auth (see AdminLogin.jsx), just closes this off
+ * from being a fully public write API.
+ */
+async function handleR2Upload(req, res) {
+  const expectedSecret = process.env.ADMIN_API_SECRET;
+  if (!expectedSecret || req.headers['x-admin-api-secret'] !== expectedSecret) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+
+  const { key, contentType, dataBase64 } = req.body;
+  if (!key || !dataBase64) {
+    return res.status(400).json({ ok: false, error: 'Missing key or file data' });
+  }
+
+  const r2AccountId = process.env.R2_ACCOUNT_ID;
+  const r2Bucket = process.env.R2_BUCKET_NAME;
+  const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID;
+  const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+  const r2PublicUrl = process.env.R2_PUBLIC_URL;
+  if (!r2AccountId || !r2Bucket || !r2AccessKeyId || !r2SecretAccessKey || !r2PublicUrl) {
+    console.error('[admin/save-resource] Missing R2 env vars on server');
+    return res.status(500).json({ ok: false, error: 'Server misconfiguration: R2 credentials not set' });
+  }
+
+  try {
+    const s3Client = new S3Client({
+      region: 'auto',
+      endpoint: `https://${r2AccountId}.r2.cloudflarestorage.com`,
+      credentials: { accessKeyId: r2AccessKeyId, secretAccessKey: r2SecretAccessKey },
+    });
+
+    await s3Client.send(new PutObjectCommand({
+      Bucket: r2Bucket,
+      Key: key,
+      Body: Buffer.from(dataBase64, 'base64'),
+      ContentType: contentType || 'application/octet-stream',
+      CacheControl: 'public, max-age=31536000',
+    }));
+
+    return res.status(200).json({ ok: true, url: `${r2PublicUrl}/${key}` });
+  } catch (err) {
+    console.error('[admin/save-resource] R2 upload error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to upload to R2' });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with
+ * { type: 'books-save-chapter', resourceId, fileName, chapterData }
+ *
+ * Writes one chapter's edited blocks straight to R2, at whatever prefix
+ * this book's resources rows already agree it lives at. Also patches
+ * metadata.json's per-chapter title/blocks_count and the DB's own
+ * chapter_count to match, and re-points every duplicate row sharing this
+ * title+category at the canonical location (see pickCanonicalStorageBaseUrl).
+ */
+async function handleBooksSaveChapter(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+
+  const { resourceId, fileName, chapterData } = req.body || {};
+  if (!resourceId || !fileName || !chapterData || !Array.isArray(chapterData.blocks)) {
+    return res.status(400).json({ ok: false, error: 'Missing or invalid resourceId, fileName or chapterData' });
+  }
+  if (!/^chapters\/chapter-\d+\.json$/.test(fileName)) {
+    return res.status(400).json({ ok: false, error: 'Invalid fileName' });
+  }
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+  const publicUrl = getR2PublicUrl();
+  const bucket = getR2Bucket();
+  if (!publicUrl || !bucket) return res.status(500).json({ ok: false, error: 'Server misconfiguration: R2 env vars not set' });
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: row, error: rowError } = await supabase.from('resources').select('resource_id,title,category,storage_base_url').eq('resource_id', resourceId).maybeSingle();
+    if (rowError) throw new Error(rowError.message);
+    if (!row) return res.status(404).json({ ok: false, error: 'Book not found' });
+
+    const groupRows = await fetchBookRows(supabase, row);
+    const canonicalUrl = pickCanonicalStorageBaseUrl(groupRows.length ? groupRows : [row]);
+    const prefix = prefixFromStorageBaseUrl(canonicalUrl, publicUrl);
+    if (!prefix) return res.status(500).json({ ok: false, error: 'Could not resolve storage location for this book' });
+
+    const s3 = getS3Client();
+    await uploadToR2(s3, bucket, `${prefix}/${fileName}`, Buffer.from(JSON.stringify(chapterData, null, 2)), 'application/json');
+
+    let realChapterCount = null;
+    try {
+      const metadata = await fetchJson(`${canonicalUrl}metadata.json`);
+      const entry = (metadata.chapters || []).find((c) => c.file_name === fileName);
+      if (entry) {
+        entry.blocks_count = chapterData.blocks.length;
+        if (chapterData.title) entry.title = chapterData.title;
+      }
+      realChapterCount = metadata.chapters?.length ?? null;
+      await uploadToR2(s3, bucket, `${prefix}/metadata.json`, Buffer.from(JSON.stringify(metadata, null, 2)), 'application/json');
+    } catch (e) {
+      // The chapter itself already saved successfully above -- a failure
+      // here just means metadata.json's display title/count go stale,
+      // not that the edit was lost.
+      console.error('[admin/save-resource:books-save-chapter] metadata.json patch failed (chapter content still saved):', e.message);
+    }
+
+    const updatePatch = { format: 'blocks', storage_base_url: canonicalUrl, metadata_url: `${canonicalUrl}metadata.json` };
+    if (realChapterCount !== null) updatePatch.chapter_count = realChapterCount;
+    const { error: updateError } = await bookRowsFilter(supabase.from('resources').update(updatePatch), row);
+    if (updateError) console.error('[admin/save-resource:books-save-chapter] row consolidation update failed (content still saved):', updateError.message);
+
+    invalidateBooksCache();
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    console.error('[admin/save-resource:books-save-chapter] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with { type: 'books-create', title, category }
+ *
+ * Creates a blank book straight in R2: metadata.json + a single empty
+ * chapter-1.json under a freshly generated resource id, plus its
+ * resources row. For content with no source docx to enrich -- e.g. a
+ * book authored directly in the editor rather than through the ingestion
+ * pipeline.
+ */
+async function handleBooksCreate(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { title, category } = req.body || {};
+  if (!BOOK_CATEGORIES.includes(category) || !title?.trim()) {
+    return res.status(400).json({ ok: false, error: 'Missing or invalid title or category' });
+  }
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+  const publicUrl = getR2PublicUrl();
+  const bucket = getR2Bucket();
+  if (!publicUrl || !bucket) return res.status(500).json({ ok: false, error: 'Server misconfiguration: R2 env vars not set' });
+
+  try {
+    const supabase = getSupabaseAdmin();
+
+    // Refuse a duplicate title+category rather than silently adding to the
+    // pile -- Duplicate Book is the path for "another one like this", New
+    // Book is for something that doesn't exist yet. Doesn't apply to Intro:
+    // sharing a generic title (e.g. "Introduction") across unrelated exams
+    // is normal there, not a collision (see TITLE_DEDUPED_CATEGORIES).
+    if (isTitleDedupedCategory(category)) {
+      const existing = await fetchRowsByTitle(supabase, category, title.trim());
+      if (existing.length > 0) return res.status(409).json({ ok: false, error: `A ${category} book titled "${title.trim()}" already exists` });
+    }
+
+    const newResourceId = generateResourceId(title.trim(), '', category, '');
+    const storageBaseUrl = `${publicUrl}/structured_resources/blocks/${category}/${newResourceId}/`;
+    const prefix = `structured_resources/blocks/${category}/${newResourceId}`;
+
+    const s3 = getS3Client();
+    const metadata = {
+      book_id: genBookId(),
+      title: title.trim(),
+      source_file: null,
+      category,
+      chapter_count: 1,
+      image_count: 0,
+      chapters: [{ title: 'Chapter 1', order: 1, enriched: true, blocks_count: 0, file_name: 'chapters/chapter-1.json' }],
+    };
+    await uploadToR2(s3, bucket, `${prefix}/metadata.json`, Buffer.from(JSON.stringify(metadata, null, 2)), 'application/json');
+    await uploadToR2(s3, bucket, `${prefix}/chapters/chapter-1.json`, Buffer.from(JSON.stringify({ id: genBookId(), title: 'Chapter 1', order: 1, blocks: [] }, null, 2)), 'application/json');
+
+    const { error } = await supabase.from('resources').insert({
+      resource_id: newResourceId,
+      file_hash: genBookId() + genBookId(),
+      title: title.trim(),
+      category,
+      format: 'blocks',
+      storage_base_url: storageBaseUrl,
+      metadata_url: `${storageBaseUrl}metadata.json`,
+      status: 'Published',
+      chapter_count: 1,
+      is_freemium: false,
+      is_locked: true,
+      updated_at: new Date().toISOString(),
+    });
+    if (error) throw new Error(error.message);
+
+    invalidateBooksCache();
+    return res.status(200).json({ ok: true, resourceId: newResourceId });
+  } catch (e) {
+    console.error('[admin/save-resource:books-create] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with
+ * { type: 'books-duplicate', sourceResourceId, newTitle, destCategory, findReplace }
+ *
+ * Clones every R2 object under the source book's prefix to a fresh
+ * resource id (images via a server-side R2 copy; metadata.json and every
+ * chapter file downloaded, optionally rewritten via literal find/replace
+ * pairs, and re-uploaded), then inserts a new resources row. Generalizes
+ * what scripts/duplicate_enriched_books.mjs did by hand for one hardcoded
+ * set of Precis subject books into a reusable action for any book (e.g.
+ * cloning a state's GS guide into a new state and rebranding the state
+ * name throughout).
+ */
+async function handleBooksDuplicate(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { sourceResourceId, newTitle, destCategory, findReplace } = req.body || {};
+  if (!sourceResourceId || !newTitle?.trim() || !BOOK_CATEGORIES.includes(destCategory)) {
+    return res.status(400).json({ ok: false, error: 'Missing or invalid sourceResourceId, newTitle or destCategory' });
+  }
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+  const publicUrl = getR2PublicUrl();
+  const bucket = getR2Bucket();
+  if (!publicUrl || !bucket) return res.status(500).json({ ok: false, error: 'Server misconfiguration: R2 env vars not set' });
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: sourceRow, error: rowError } = await supabase.from('resources').select('resource_id,title,category,storage_base_url').eq('resource_id', sourceResourceId).maybeSingle();
+    if (rowError) throw new Error(rowError.message);
+    if (!sourceRow) return res.status(404).json({ ok: false, error: 'Source book not found' });
+
+    const sourceGroupRows = await fetchBookRows(supabase, sourceRow);
+    const sourceCanonicalUrl = pickCanonicalStorageBaseUrl(sourceGroupRows.length ? sourceGroupRows : [sourceRow]);
+    const sourcePrefix = prefixFromStorageBaseUrl(sourceCanonicalUrl, publicUrl);
+    if (!sourcePrefix) return res.status(500).json({ ok: false, error: 'Could not resolve source storage location' });
+
+    if (isTitleDedupedCategory(destCategory)) {
+      const existingDest = await fetchRowsByTitle(supabase, destCategory, newTitle.trim());
+      if (existingDest.length > 0) return res.status(409).json({ ok: false, error: `A ${destCategory} book titled "${newTitle.trim()}" already exists` });
+    }
+
+    const s3 = getS3Client();
+    const objectKeys = await listR2Keys(s3, bucket, sourcePrefix);
+    if (objectKeys.length === 0) return res.status(400).json({ ok: false, error: 'Source book has no content in R2' });
+
+    const newResourceId = generateResourceId(newTitle.trim(), '', destCategory, '');
+    const destPrefix = `structured_resources/blocks/${destCategory}/${newResourceId}`;
+    const destStorageBaseUrl = `${publicUrl}/structured_resources/blocks/${destCategory}/${newResourceId}/`;
+    const pairs = Array.isArray(findReplace) ? findReplace.filter((p) => p && p.find) : [];
+
+    let metadata = null;
+    for (const key of objectKeys) {
+      const relative = key.slice(sourcePrefix.length + 1); // strip "prefix/"
+      const destKey = `${destPrefix}/${relative}`;
+
+      if (relative === 'metadata.json' || relative.startsWith('chapters/')) {
+        const content = await fetchJson(`${publicUrl}/${key}`);
+        const transformed = pairs.length ? deepReplaceStrings(content, pairs) : content;
+        if (relative === 'metadata.json') {
+          metadata = transformed; // uploaded once below, after title/id/category are patched in
+        } else {
+          await uploadToR2(s3, bucket, destKey, Buffer.from(JSON.stringify(transformed, null, 2)), 'application/json');
+        }
+      } else {
+        // Images etc. -- binary, no text transform, server-side copy (no download/reupload round trip)
+        await s3.send(new CopyObjectCommand({ Bucket: bucket, CopySource: `${bucket}/${encodeURIComponent(key)}`, Key: destKey }));
+      }
+    }
+
+    if (!metadata) return res.status(500).json({ ok: false, error: 'Source book has no metadata.json' });
+    metadata.book_id = genBookId();
+    metadata.title = newTitle.trim();
+    metadata.category = destCategory;
+    await uploadToR2(s3, bucket, `${destPrefix}/metadata.json`, Buffer.from(JSON.stringify(metadata, null, 2)), 'application/json');
+
+    const { error } = await supabase.from('resources').insert({
+      resource_id: newResourceId,
+      file_hash: genBookId() + genBookId(),
+      title: newTitle.trim(),
+      category: destCategory,
+      format: 'blocks',
+      storage_base_url: destStorageBaseUrl,
+      metadata_url: `${destStorageBaseUrl}metadata.json`,
+      status: 'Published',
+      chapter_count: metadata.chapters?.length ?? 0,
+      is_freemium: false,
+      is_locked: true,
+      updated_at: new Date().toISOString(),
+    });
+    if (error) throw new Error(error.message);
+
+    invalidateBooksCache();
+    return res.status(200).json({ ok: true, resourceId: newResourceId });
+  } catch (e) {
+    console.error('[admin/save-resource:books-duplicate] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with { type: 'books-delete', resourceId }
+ *
+ * Deletes every R2 object under the book's canonical prefix, then deletes
+ * every resources row sharing that title+category -- leaving any of
+ * them behind would just be a dangling reference to now-missing content.
+ * Destructive; the only undo is re-Duplicating from a version still open
+ * in someone's browser, or re-ingesting from a source doc if one exists.
+ */
+async function handleBooksDelete(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { resourceId } = req.body || {};
+  if (!resourceId) return res.status(400).json({ ok: false, error: 'Missing resourceId' });
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+  const publicUrl = getR2PublicUrl();
+  const bucket = getR2Bucket();
+  if (!publicUrl || !bucket) return res.status(500).json({ ok: false, error: 'Server misconfiguration: R2 env vars not set' });
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: row, error: rowError } = await supabase.from('resources').select('resource_id,title,category,storage_base_url').eq('resource_id', resourceId).maybeSingle();
+    if (rowError) throw new Error(rowError.message);
+    if (!row) return res.status(404).json({ ok: false, error: 'Book not found' });
+
+    const groupRows = await fetchBookRows(supabase, row);
+    const canonicalUrl = pickCanonicalStorageBaseUrl(groupRows.length ? groupRows : [row]);
+    const prefix = prefixFromStorageBaseUrl(canonicalUrl, publicUrl);
+
+    if (prefix) {
+      const s3 = getS3Client();
+      const keys = await listR2Keys(s3, bucket, prefix);
+      if (keys.length > 0) await deleteR2Keys(s3, bucket, keys);
+    }
+
+    const { error } = await bookRowsFilter(supabase.from('resources').delete(), row);
+    if (error) throw new Error(error.message);
+
+    invalidateBooksCache();
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    console.error('[admin/save-resource:books-delete] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with
+ * { type: 'books-rename', resourceId, newTitle }
+ *
+ * Renames a book by updating:
+ * 1. `metadata.json` in R2 (`metadata.title = newTitle.trim()`)
+ * 2. All duplicate/linked rows in `resources` table for this category + old title
+ */
+async function handleBooksRename(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+
+  const { resourceId, newTitle } = req.body || {};
+  if (!resourceId || !newTitle || !newTitle.trim()) {
+    return res.status(400).json({ ok: false, error: 'Missing resourceId or newTitle' });
+  }
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+  const publicUrl = getR2PublicUrl();
+  const bucket = getR2Bucket();
+  if (!publicUrl || !bucket) return res.status(500).json({ ok: false, error: 'Server misconfiguration: R2 env vars not set' });
+
+  const trimmedNewTitle = newTitle.trim();
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: row, error: rowError } = await supabase.from('resources').select('resource_id,title,category,storage_base_url').eq('resource_id', resourceId).maybeSingle();
+    if (rowError) throw new Error(rowError.message);
+    if (!row) return res.status(404).json({ ok: false, error: 'Book not found' });
+
+    const groupRows = await fetchBookRows(supabase, row);
+    const canonicalUrl = pickCanonicalStorageBaseUrl(groupRows.length ? groupRows : [row]);
+    const prefix = prefixFromStorageBaseUrl(canonicalUrl, publicUrl);
+
+    // Patch metadata.json in R2 if prefix is resolvable
+    if (prefix) {
+      try {
+        const metadata = await fetchJson(`${canonicalUrl}metadata.json`);
+        metadata.title = trimmedNewTitle;
+        const s3 = getS3Client();
+        await uploadToR2(s3, bucket, `${prefix}/metadata.json`, Buffer.from(JSON.stringify(metadata, null, 2)), 'application/json');
+      } catch (e) {
+        console.error('[admin/save-resource:books-rename] metadata.json patch failed:', e.message);
+      }
+    }
+
+    // Update DB rows for this book
+    const { error: updateError } = await bookRowsFilter(
+      supabase.from('resources').update({ title: trimmedNewTitle, updated_at: new Date().toISOString() }),
+      row
+    );
+    if (updateError) throw new Error(updateError.message);
+
+    invalidateBooksCache();
+    return res.status(200).json({ ok: true, newTitle: trimmedNewTitle });
+  } catch (e) {
+    console.error('[admin/save-resource:books-rename] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+const BOOK_LEVELS = ['central', 'state', 'ut'];
+
+/**
+ * POST /api/admin/save-resource with
+ * { type: 'books-save-tags', resourceId, category?, level?, stateUt?, conductingBody? }
+ *
+ * One combined save for every tag the admin table lets you edit inline
+ * (Category, Level, State/UT, Conducting Body) -- the frontend stages all
+ * of them locally as the admin changes dropdowns and sends one request on
+ * an explicit "Save" click, rather than a separate round trip per field.
+ * Only the fields actually present in the request body are touched
+ * (`undefined` means "leave alone"; pass `null` to clear a tag).
+ *
+ * Category changes re-label in place -- content stays exactly where it
+ * already lives in R2 (storage_base_url is stored per-row, not recomputed
+ * from category at read time). Deliberately does NOT reject a destination
+ * title that already exists: unlike books-create/books-duplicate, where a
+ * title clash means "these are two different things," a mis-tagged book
+ * landing on a title the destination category already has is exactly the
+ * case this exists to fix (e.g. "Haryana_GS" split with some rows wrongly
+ * left in Guide while the real book lives in Precis) -- it merges into
+ * that group the same way any other duplicate-titled row already does.
+ *
+ * Level/State-UT/Conducting Body are plain labels for future exam<->book
+ * mapping -- they don't affect content, category grouping, or R2 at all.
+ */
+async function handleBooksSaveTags(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { resourceId, title: newTitle, category: newCategory, level: newLevel, stateUt: newStateUt, conductingBody: newConductingBody } = req.body || {};
+  if (!resourceId) return res.status(400).json({ ok: false, error: 'Missing resourceId' });
+  if (newCategory !== undefined && !BOOK_CATEGORIES.includes(newCategory)) {
+    return res.status(400).json({ ok: false, error: 'Invalid category' });
+  }
+  if (newLevel !== undefined && newLevel !== null && !BOOK_LEVELS.includes(newLevel)) {
+    return res.status(400).json({ ok: false, error: 'Invalid level' });
+  }
+  if (newTitle !== undefined && (!newTitle || !newTitle.trim())) {
+    return res.status(400).json({ ok: false, error: 'Title cannot be empty' });
+  }
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: row, error: rowError } = await supabase.from('resources').select('resource_id,title,category,storage_base_url').eq('resource_id', resourceId).maybeSingle();
+    if (rowError) throw new Error(rowError.message);
+    if (!row) return res.status(404).json({ ok: false, error: 'Book not found' });
+
+    const patch = { updated_at: new Date().toISOString() };
+    if (newTitle !== undefined && newTitle.trim() !== row.title) {
+      const trimmedTitle = newTitle.trim();
+      patch.title = trimmedTitle;
+
+      // Update metadata.json in R2 if storage location is resolvable
+      const publicUrl = getR2PublicUrl();
+      const bucket = getR2Bucket();
+      if (publicUrl && bucket) {
+        try {
+          const groupRows = await fetchBookRows(supabase, row);
+          const canonicalUrl = pickCanonicalStorageBaseUrl(groupRows.length ? groupRows : [row]);
+          const prefix = prefixFromStorageBaseUrl(canonicalUrl, publicUrl);
+          if (prefix) {
+            const metadata = await fetchJson(`${canonicalUrl}metadata.json`);
+            metadata.title = trimmedTitle;
+            const s3 = getS3Client();
+            await uploadToR2(s3, bucket, `${prefix}/metadata.json`, Buffer.from(JSON.stringify(metadata, null, 2)), 'application/json');
+          }
+        } catch (e) {
+          console.error('[admin/save-resource:books-save-tags] metadata.json title patch failed:', e.message);
+        }
+      }
+    }
+    if (newCategory !== undefined) patch.category = newCategory;
+    if (newLevel !== undefined) patch.level = newLevel;
+    if (newStateUt !== undefined) patch.state_ut = newStateUt;
+    if (newConductingBody !== undefined) patch.conducting_body = newConductingBody;
+
+    // bookRowsFilter scopes by `row`'s CURRENT category/title (Guide/Precis
+    // title-grouped, Intro resource_id-only) -- correct even when this same
+    // patch also changes `category` or `title`, since the WHERE clause is built before
+    // the UPDATE's SET values apply.
+    const { error: updateError } = await bookRowsFilter(supabase.from('resources').update(patch), row);
+    if (updateError) throw new Error(updateError.message);
+
+    invalidateBooksCache();
+    return res.status(200).json({ ok: true, ...patch });
+  } catch (e) {
+    console.error('[admin/save-resource:books-save-tags] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+// Cover-studio persistence (src/pages/admin/BookCoverStudio.jsx). Text fields
+// live in book_covers.cover_data; the hero picture, logo and baked thumbnails
+// live in R2 (uploaded by the browser through r2-upload first) and only their
+// URLs are stored here. See sql/book_covers.sql.
+function bookCoverKey(row) {
+  return isTitleDedupedCategory(row.category)
+    ? `${row.category}::${row.title.trim().toLowerCase()}`
+    : `${row.category}::${row.resource_id}`;
+}
+
+// R2 is read server-side so the browser gets data URLs and never needs CORS
+// on the bucket (a cross-origin image would taint the canvas used to bake the
+// 3D thumbnail).
+async function urlToDataUrl(url) {
+  if (!url) return '';
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return '';
+    const buf = Buffer.from(await r.arrayBuffer());
+    return `data:${r.headers.get('content-type') || 'image/jpeg'};base64,${buf.toString('base64')}`;
+  } catch (e) {
+    console.error('[admin/save-resource:book-cover] image fetch failed:', url, e.message);
+    return '';
+  }
+}
+
+/** POST { type: 'book-cover-get', resourceId } */
+async function handleBookCoverGet(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { resourceId } = req.body || {};
+  if (!resourceId) return res.status(400).json({ ok: false, error: 'Missing resourceId' });
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: row, error: rowError } = await supabase.from('resources').select('resource_id,title,category').eq('resource_id', resourceId).maybeSingle();
+    if (rowError) throw new Error(rowError.message);
+    if (!row) return res.status(404).json({ ok: false, error: 'Book not found' });
+    const { data: cover, error } = await supabase.from('book_covers').select('*').eq('book_key', bookCoverKey(row)).maybeSingle();
+    if (error) throw new Error(error.message);
+    const [imageDataUrl, logoDataUrl] = cover ? await Promise.all([urlToDataUrl(cover.image_url), urlToDataUrl(cover.logo_url)]) : ['', ''];
+    return res.status(200).json({ ok: true, book: { resourceId: row.resource_id, title: row.title, category: row.category }, cover: cover || null, imageDataUrl, logoDataUrl });
+  } catch (e) {
+    console.error('[admin/save-resource:book-cover-get] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST { type: 'book-cover-save', resourceId, coverData, logoUrl, imageUrl, thumbUrl, flatUrl, updatedBy }
+ * Upserts the book's cover row and points every resources row of the book at
+ * the baked 3D thumbnail (resources.thumbnail_url).
+ */
+async function handleBookCoverSave(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { resourceId, coverData, logoUrl, imageUrl, thumbUrl, flatUrl, updatedBy } = req.body || {};
+  if (!resourceId || !coverData || typeof coverData !== 'object') return res.status(400).json({ ok: false, error: 'Missing resourceId or coverData' });
+  if (!thumbUrl) return res.status(400).json({ ok: false, error: 'Missing thumbUrl' });
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: row, error: rowError } = await supabase.from('resources').select('resource_id,title,category').eq('resource_id', resourceId).maybeSingle();
+    if (rowError) throw new Error(rowError.message);
+    if (!row) return res.status(404).json({ ok: false, error: 'Book not found' });
+
+    const { error: upsertError } = await supabase.from('book_covers').upsert({
+      book_key: bookCoverKey(row),
+      category: row.category,
+      title: row.title,
+      resource_id: row.resource_id,
+      cover_data: coverData,
+      logo_url: logoUrl || null,
+      image_url: imageUrl || null,
+      thumb_url: thumbUrl,
+      flat_url: flatUrl || null,
+      updated_by: updatedBy || null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'book_key' });
+    if (upsertError) throw new Error(upsertError.message);
+
+    const { error: thumbError } = await bookRowsFilter(supabase.from('resources').update({ thumbnail_url: thumbUrl }), row);
+    if (thumbError) throw new Error(thumbError.message);
+
+    invalidateBooksCache();
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    console.error('[admin/save-resource:book-cover-save] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with
+ * { type: 'books-replace-with-existing', oldResourceId, newResourceId, renameToOld?, dryRun? }
+ *
+ * Swaps a live Guide/Precis book for ANOTHER BOOK THAT ALREADY EXISTS in
+ * `resources` (for example the reparsed "<title> 2026 NEW" copies), instead of
+ * converting an uploaded .docx like Publish Content's Replace does:
+ *
+ *   - every exam linked to the old book (lc_exam_resource_map) is repointed to
+ *     the new book; an exam that already has the new book keeps one link only
+ *   - the new book is published; the old book is archived (status Draft)
+ *   - level / state_ut / conducting_body are copied onto the new book when it
+ *     has none
+ *   - optionally (renameToOld, default true) the new book takes the old book's
+ *     title, after the old rows are retitled "<title> (replaced <date>)" so the
+ *     two groups never share a title in Book Content
+ *
+ * dryRun (the default) writes nothing and returns the plan. A real run writes a
+ * rollback log to R2 (book-replace-log/) with every row it touched.
+ * Guide and Precis only: Intro is 1:1 with an exam and keeps its own flow.
+ */
+async function handleBooksReplaceWithExisting(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { oldResourceId, newResourceId, renameToOld = true, dryRun = true } = req.body || {};
+  if (!oldResourceId || !newResourceId) return res.status(400).json({ ok: false, error: 'Missing oldResourceId or newResourceId' });
+  if (oldResourceId === newResourceId) return res.status(400).json({ ok: false, error: 'A book cannot replace itself' });
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const cols = 'resource_id,title,category,status,level,state_ut,conducting_body,storage_base_url,chapter_count';
+    const [{ data: oldRow, error: e1 }, { data: newRow, error: e2 }] = await Promise.all([
+      supabase.from('resources').select(cols).eq('resource_id', oldResourceId).maybeSingle(),
+      supabase.from('resources').select(cols).eq('resource_id', newResourceId).maybeSingle(),
+    ]);
+    if (e1) throw new Error(e1.message);
+    if (e2) throw new Error(e2.message);
+    if (!oldRow || !newRow) return res.status(404).json({ ok: false, error: 'Book not found' });
+    if (!isTitleDedupedCategory(oldRow.category)) return res.status(400).json({ ok: false, error: 'Only Guide and Precis books can be replaced this way' });
+    if (newRow.category !== oldRow.category) return res.status(400).json({ ok: false, error: `Category mismatch: the new book is ${newRow.category}, the old one is ${oldRow.category}` });
+
+    const oldRows = await fetchBookRows(supabase, oldRow);
+    const newRows = await fetchBookRows(supabase, newRow);
+    const oldIds = oldRows.map((r) => r.resource_id);
+    const newIds = newRows.map((r) => r.resource_id);
+    if (oldIds.some((id) => newIds.includes(id))) return res.status(400).json({ ok: false, error: 'These two are the same book (they share a title)' });
+
+    const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+    const fetchMap = async (ids) => {
+      let all = [];
+      for (const part of chunk(ids, 100)) {
+        for (let from = 0; ; from += 1000) {
+          const { data, error } = await supabase.from('lc_exam_resource_map').select('*').in('resource_id', part).eq('category', oldRow.category).range(from, from + 999);
+          if (error) throw new Error(error.message);
+          all = all.concat(data || []);
+          if (!data || data.length < 1000) break;
+        }
+      }
+      return all;
+    };
+    const [oldMap, newMap] = await Promise.all([fetchMap(oldIds), fetchMap(newIds)]);
+
+    // One surviving link per exam: repoint the first old link, drop extras and
+    // any exam that already has the new book.
+    const alreadyOnNew = new Set(newMap.map((m) => m.exam_id));
+    const seen = new Set();
+    const toRepoint = [];
+    const toDelete = [];
+    for (const m of oldMap) {
+      if (alreadyOnNew.has(m.exam_id) || seen.has(m.exam_id)) { toDelete.push(m); continue; }
+      seen.add(m.exam_id);
+      toRepoint.push(m);
+    }
+
+    const oldTitle = oldRow.title.trim();
+    const newTitle = newRow.title.trim();
+    const today = new Date().toISOString().slice(0, 10);
+    const willRename = Boolean(renameToOld) && newTitle.toLowerCase() !== oldTitle.toLowerCase();
+    const retitledOld = `${oldTitle} (replaced ${today})`;
+    const tagPatch = {};
+    if (!newRow.level && oldRow.level) tagPatch.level = oldRow.level;
+    if (!newRow.state_ut && oldRow.state_ut) tagPatch.state_ut = oldRow.state_ut;
+    if (!newRow.conducting_body && oldRow.conducting_body) tagPatch.conducting_body = oldRow.conducting_body;
+
+    const warnings = [];
+    if (oldMap.length === 0) warnings.push('The old book has no exam links in lc_exam_resource_map, so no exams will be repointed (exams served only by the legacy exam_name fallback are not touched).');
+    if (newRow.chapter_count != null && oldRow.chapter_count != null && newRow.chapter_count < oldRow.chapter_count) warnings.push(`The new book has fewer chapters (${newRow.chapter_count}) than the old one (${oldRow.chapter_count}).`);
+    if (oldRows.length > 1) warnings.push(`The old book spans ${oldRows.length} resources rows; all of them will be archived.`);
+    // Rows with no lc_exam_resource_map link may still be reaching an exam through
+    // the legacy resources.exam_name fallback; archiving them cuts that off.
+    const mappedRowIds = new Set(oldMap.map((m) => m.resource_id));
+    // Only rows that are live today can be serving an exam; Draft/Archived duplicates are not.
+    const unmappedOldRows = oldRows.filter((r) => !mappedRowIds.has(r.resource_id) && !['draft', 'archived'].includes((r.status || '').toLowerCase())).length;
+    if (unmappedOldRows > 0) warnings.push(`${unmappedOldRows} of the old book's ${oldRows.length} rows are live but have no exam link. Any exam that reaches this book only through the legacy exam_name fallback will lose it when the old rows are archived.`);
+
+    const plan = {
+      oldTitle, oldRowCount: oldRows.length, oldChapters: oldRow.chapter_count ?? null,
+      newTitle, newRowCount: newRows.length, newChapters: newRow.chapter_count ?? null, newStatus: newRow.status,
+      examsLinkedToOld: new Set(oldMap.map((m) => m.exam_id)).size,
+      linksRepointed: toRepoint.length, linksDropped: toDelete.length,
+      examsAlreadyOnNew: alreadyOnNew.size,
+      rename: willRename ? { newBookTitle: oldTitle, oldBookTitle: retitledOld } : null,
+      tagsCopied: Object.keys(tagPatch),
+      unmappedOldRows,
+      warnings,
+    };
+    if (dryRun) return res.status(200).json({ ok: true, dryRun: true, plan });
+
+    const now = new Date().toISOString();
+    // Order: links first (so no exam is ever without a book), then titles, then status.
+    for (const part of chunk(toRepoint.map((m) => m.id), 200)) {
+      const { error } = await supabase.from('lc_exam_resource_map').update({
+        resource_id: newRow.resource_id, confidence: 'high', source: 'manual',
+        reasoning: `Replaced "${oldTitle}" with existing book "${newTitle}"`,
+      }).in('id', part);
+      if (error) throw new Error(`Repointing exam links failed: ${error.message}`);
+    }
+    for (const part of chunk(toDelete.map((m) => m.id), 200)) {
+      const { error } = await supabase.from('lc_exam_resource_map').delete().in('id', part);
+      if (error) throw new Error(`Removing duplicate exam links failed: ${error.message}`);
+    }
+
+    if (willRename) {
+      const { error: oldTitleErr } = await supabase.from('resources').update({ title: retitledOld, updated_at: now }).in('resource_id', oldIds);
+      if (oldTitleErr) throw new Error(`Retitling the old book failed: ${oldTitleErr.message}`);
+      const { error: newTitleErr } = await supabase.from('resources').update({ title: oldTitle, updated_at: now }).in('resource_id', newIds);
+      if (newTitleErr) throw new Error(`Retitling the new book failed: ${newTitleErr.message}`);
+      // Keep the book's own metadata.json title in step (best effort).
+      try {
+        const publicUrl = getR2PublicUrl();
+        const bucket = getR2Bucket();
+        const canonicalUrl = pickCanonicalStorageBaseUrl(newRows);
+        const prefix = publicUrl && bucket ? prefixFromStorageBaseUrl(canonicalUrl, publicUrl) : null;
+        if (prefix) {
+          const metadata = await fetchJson(`${canonicalUrl}metadata.json`);
+          metadata.title = oldTitle;
+          await uploadToR2(getS3Client(), bucket, `${prefix}/metadata.json`, Buffer.from(JSON.stringify(metadata, null, 2)), 'application/json');
+        }
+      } catch (e) {
+        console.error('[admin/save-resource:books-replace-with-existing] metadata.json title patch failed:', e.message);
+      }
+    }
+
+    const { error: pubErr } = await supabase.from('resources').update({ status: 'Published', ...tagPatch, updated_at: now }).in('resource_id', newIds);
+    if (pubErr) throw new Error(`Publishing the new book failed: ${pubErr.message}`);
+    const { error: archErr } = await supabase.from('resources').update({ status: 'Draft', updated_at: now }).in('resource_id', oldIds);
+    if (archErr) throw new Error(`Archiving the old book failed: ${archErr.message}`);
+
+    // Rollback log: everything needed to undo this swap.
+    let logKey = null;
+    try {
+      const bucket = getR2Bucket();
+      if (bucket) {
+        logKey = `book-replace-log/${now.replace(/[:.]/g, '-')}-${newRow.resource_id}.json`;
+        const log = {
+          at: now, plan,
+          old: oldRows.map((r) => ({ resource_id: r.resource_id, title: r.title, status: r.status })),
+          new: newRows.map((r) => ({ resource_id: r.resource_id, title: r.title, status: r.status, level: r.level, state_ut: r.state_ut, conducting_body: r.conducting_body })),
+          linksRepointed: toRepoint, linksDeleted: toDelete,
+        };
+        await uploadToR2(getS3Client(), bucket, logKey, Buffer.from(JSON.stringify(log, null, 2)), 'application/json');
+      }
+    } catch (e) {
+      console.error('[admin/save-resource:books-replace-with-existing] rollback log failed:', e.message);
+      logKey = null;
+    }
+
+    invalidateBooksCache();
+    return res.status(200).json({ ok: true, dryRun: false, plan, logKey, newResourceId: newRow.resource_id });
+  } catch (e) {
+    console.error('[admin/save-resource:books-replace-with-existing] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with { type: 'books-archive', resourceId }
+ *
+ * Sets status = 'Draft' on all resources rows for this book (hides from candidates & active list)
+ */
+async function handleBooksArchive(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { resourceId, excludeResourceId } = req.body || {};
+  if (!resourceId) return res.status(400).json({ ok: false, error: 'Missing resourceId' });
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: row, error: rowError } = await supabase.from('resources').select('resource_id,title,category').eq('resource_id', resourceId).maybeSingle();
+    if (rowError) throw new Error(rowError.message);
+    if (!row) return res.status(404).json({ ok: false, error: 'Book not found' });
+
+    let archiveQuery = bookRowsFilter(
+      supabase.from('resources').update({ status: 'Draft', updated_at: new Date().toISOString() }),
+      row
+    );
+    // Publish Content's Replace archives the old book right after publishing the
+    // new one; when both share a title the new row must not be archived with it.
+    if (excludeResourceId) archiveQuery = archiveQuery.neq('resource_id', excludeResourceId);
+    const { error: updateError } = await archiveQuery;
+    if (updateError) throw new Error(updateError.message);
+
+    invalidateBooksCache();
+    return res.status(200).json({ ok: true, status: 'Draft' });
+  } catch (e) {
+    console.error('[admin/save-resource:books-archive] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with { type: 'books-unarchive', resourceId }
+ *
+ * Sets status = 'Published' on all resources rows for this book
+ */
+async function handleBooksUnarchive(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { resourceId } = req.body || {};
+  if (!resourceId) return res.status(400).json({ ok: false, error: 'Missing resourceId' });
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: row, error: rowError } = await supabase.from('resources').select('resource_id,title,category').eq('resource_id', resourceId).maybeSingle();
+    if (rowError) throw new Error(rowError.message);
+    if (!row) return res.status(404).json({ ok: false, error: 'Book not found' });
+
+    const { error: updateError } = await bookRowsFilter(
+      supabase.from('resources').update({ status: 'Published', updated_at: new Date().toISOString() }),
+      row
+    );
+    if (updateError) throw new Error(updateError.message);
+
+    invalidateBooksCache();
+    return res.status(200).json({ ok: true, status: 'Published' });
+  } catch (e) {
+    console.error('[admin/save-resource:books-unarchive] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with
+ * { type: 'books-find-replace', resourceId, find, replace, matchCase, matchWholeWord, scope, chapterFileName }
+ *
+ * Finds and replaces text across chapters and metadata directly in R2.
+ */
+async function handleBooksFindReplace(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { resourceId, find, replace = '', matchCase = false, matchWholeWord = false, scope = 'all', chapterFileName } = req.body || {};
+  if (!resourceId || !find || typeof find !== 'string' || !find.trim()) {
+    return res.status(400).json({ ok: false, error: 'Missing or invalid search term' });
+  }
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+  const publicUrl = getR2PublicUrl();
+  const bucket = getR2Bucket();
+  if (!publicUrl || !bucket) return res.status(500).json({ ok: false, error: 'Server misconfiguration: R2 env vars not set' });
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: row, error: rowError } = await supabase.from('resources').select('resource_id,title,category,storage_base_url').eq('resource_id', resourceId).maybeSingle();
+    if (rowError) throw new Error(rowError.message);
+    if (!row) return res.status(404).json({ ok: false, error: 'Book not found' });
+
+    const groupRows = await fetchBookRows(supabase, row);
+    const canonicalUrl = pickCanonicalStorageBaseUrl(groupRows.length ? groupRows : [row]);
+    const prefix = prefixFromStorageBaseUrl(canonicalUrl, publicUrl);
+    if (!prefix) return res.status(500).json({ ok: false, error: 'Could not resolve storage location for this book' });
+
+    const s3 = getS3Client();
+    const metadata = await fetchJson(`${canonicalUrl}metadata.json?t=${Date.now()}`);
+    const chapters = metadata.chapters || [];
+
+    const targetChapters = scope === 'chapter' && chapterFileName
+      ? chapters.filter((c) => c.file_name === chapterFileName)
+      : chapters;
+
+    let totalReplacements = 0;
+    const modifiedChapters = [];
+
+    // Process all chapters concurrently so replace happens everywhere at once
+    const chapterResults = await Promise.all(
+      targetChapters.map(async (chapterMeta) => {
+        try {
+          const chapterData = await fetchJson(`${canonicalUrl}${chapterMeta.file_name}?t=${Date.now()}`);
+          const { value: updatedChapter, count: chapterCount } = replaceTextInValue(chapterData, find, replace, { matchCase, matchWholeWord });
+
+          if (chapterCount > 0) {
+            await uploadToR2(s3, bucket, `${prefix}/${chapterMeta.file_name}`, Buffer.from(JSON.stringify(updatedChapter, null, 2)), 'application/json', 'no-cache, no-store, must-revalidate');
+
+            if (updatedChapter.title && updatedChapter.title !== chapterMeta.title) {
+              chapterMeta.title = updatedChapter.title;
+            }
+            return {
+              fileName: chapterMeta.file_name,
+              title: updatedChapter.title || chapterMeta.title,
+              count: chapterCount,
+            };
+          }
+          return null;
+        } catch (err) {
+          console.error(`[books-find-replace] Error updating ${chapterMeta.file_name}:`, err.message);
+          return null;
+        }
+      })
+    );
+
+    for (const resItem of chapterResults) {
+      if (resItem) {
+        totalReplacements += resItem.count;
+        modifiedChapters.push(resItem);
+      }
+    }
+
+    let metadataChanged = false;
+    let oldTitle = row.title;
+    let newTitle = metadata.title;
+    if (scope === 'all') {
+      const { value: updatedMetaTitle, count: metaTitleCount } = replaceTextInValue(metadata.title, find, replace, { matchCase, matchWholeWord });
+      if (metaTitleCount > 0) {
+        metadata.title = updatedMetaTitle;
+        newTitle = updatedMetaTitle;
+        metadataChanged = true;
+        totalReplacements += metaTitleCount;
+      }
+    }
+    if (modifiedChapters.length > 0 || metadataChanged) {
+      await uploadToR2(s3, bucket, `${prefix}/metadata.json`, Buffer.from(JSON.stringify(metadata, null, 2)), 'application/json', 'no-cache, no-store, must-revalidate');
+    }
+
+    if (metadataChanged && newTitle !== oldTitle) {
+      try {
+        await supabase
+          .from('resources')
+          .update({ title: newTitle, updated_at: new Date().toISOString() })
+          .eq('category', row.category)
+          .ilike('title', escapeIlike(oldTitle));
+      } catch (dbErr) {
+        console.error('[books-find-replace] Failed to update resources table title:', dbErr.message);
+      }
+    }
+
+    invalidateBooksCache();
+    return res.status(200).json({
+      ok: true,
+      totalReplacements,
+      chaptersModified: modifiedChapters.length,
+      modifiedChapters,
+      metadata,
+    });
+  } catch (e) {
+    console.error('[admin/save-resource:books-find-replace] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with
+ * { type: 'books-find-count', resourceId, find, matchCase, matchWholeWord, scope, chapterFileName }
+ *
+ * Fast server-side match count across chapters in R2 without modifying anything.
+ */
+async function handleBooksFindCount(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { resourceId, find, matchCase = false, matchWholeWord = false, scope = 'all', chapterFileName } = req.body || {};
+  if (!resourceId || !find || typeof find !== 'string' || !find.trim()) {
+    return res.status(200).json({ ok: true, totalMatches: 0, chapterMatches: {} });
+  }
+  if (!supabaseUrl) return res.status(500).json({ ok: false, error: 'Missing Supabase credentials on server' });
+  const publicUrl = getR2PublicUrl();
+  if (!publicUrl) return res.status(500).json({ ok: false, error: 'Server misconfiguration: R2 env vars not set' });
+
+  try {
+    const supabase = getSupabaseAdmin();
+    const { data: row, error: rowError } = await supabase.from('resources').select('resource_id,title,category,storage_base_url').eq('resource_id', resourceId).maybeSingle();
+    if (rowError) throw new Error(rowError.message);
+    if (!row) return res.status(404).json({ ok: false, error: 'Book not found' });
+
+    const groupRows = await fetchRowsByTitle(supabase, row.category, row.title);
+    const canonicalUrl = pickCanonicalStorageBaseUrl(groupRows.length ? groupRows : [row]);
+
+    const metadata = await fetchJson(`${canonicalUrl}metadata.json?t=${Date.now()}`);
+    const chapters = metadata.chapters || [];
+
+    const targetChapters = scope === 'chapter' && chapterFileName
+      ? chapters.filter((c) => c.file_name === chapterFileName)
+      : chapters;
+
+    let totalMatches = 0;
+    const chapterMatches = {};
+
+    await Promise.all(
+      targetChapters.map(async (chapterMeta) => {
+        try {
+          const chapterData = await fetchJson(`${canonicalUrl}${chapterMeta.file_name}?t=${Date.now()}`);
+          const { count } = replaceTextInValue(chapterData, find, '', { matchCase, matchWholeWord });
+          if (count > 0) {
+            totalMatches += count;
+            chapterMatches[chapterMeta.file_name] = count;
+          }
+        } catch {}
+      })
+    );
+
+    if (scope === 'all') {
+      const { count: metaTitleCount } = replaceTextInValue(metadata.title, find, '', { matchCase, matchWholeWord });
+      if (metaTitleCount > 0) {
+        totalMatches += metaTitleCount;
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      totalMatches,
+      chapterMatches,
+    });
+  } catch (e) {
+    console.error('[admin/save-resource:books-find-count] failed:', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+}
+
+async function handleThemeSave(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { theme } = req.body;
+  if (!theme || !theme.name) {
+    return res.status(400).json({ ok: false, error: 'Theme name is required' });
+  }
+
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    const row = {
+      name: theme.name,
+      slug: theme.slug || theme.name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'theme',
+      description: theme.description || '',
+      is_system: false,
+      tokens: theme.tokens || {},
+      updated_at: new Date().toISOString(),
+    };
+
+    if (theme.id && typeof theme.id === 'string' && theme.id.length > 20) {
+      row.id = theme.id;
+    }
+
+    const { data, error } = await supabaseAdmin.from('lc_reader_themes').upsert(row).select().single();
+    if (error) {
+      return res.status(400).json({ ok: false, error: error.message });
+    }
+    return res.status(200).json({ ok: true, data });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
+/**
+ * POST /api/admin/save-resource with { type: 'books-sync-pairs', pairs? }
+ *
+ * Fast, service-role synchronization of exam links between same-named Guide and Precis books.
+ */
+async function handleBooksSyncPairs(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { pairs } = req.body || {};
+
+  try {
+    const supabase = getSupabaseAdmin();
+
+    // 1. Fetch all Guide & Precis resources
+    let allResources = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await supabase
+        .from('resources')
+        .select('resource_id, title, category, format, status, storage_base_url')
+        .in('category', ['Guide', 'Precis'])
+        .range(from, from + 999);
+      if (error) throw error;
+      allResources = allResources.concat(data || []);
+      if (!data || data.length < 1000) break;
+    }
+
+    // 2. Fetch all mappings in lc_exam_resource_map for Guide and Precis
+    let allMaps = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await supabase
+        .from('lc_exam_resource_map')
+        .select('id, exam_id, resource_id, category')
+        .in('category', ['Guide', 'Precis'])
+        .range(from, from + 999);
+      if (error) throw error;
+      allMaps = allMaps.concat(data || []);
+      if (!data || data.length < 1000) break;
+    }
+
+    const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+    // Index mappings by resource_id
+    const mapsByResourceId = new Map();
+    for (const m of allMaps) {
+      if (!mapsByResourceId.has(m.resource_id)) mapsByResourceId.set(m.resource_id, new Set());
+      mapsByResourceId.get(m.resource_id).add(m.exam_id);
+    }
+
+    // Index resources by (category, norm(title))
+    const resourcesByCategoryAndTitle = new Map();
+    for (const r of allResources) {
+      if (!r.title) continue;
+      const key = `${r.category}::${norm(r.title)}`;
+      if (!resourcesByCategoryAndTitle.has(key)) resourcesByCategoryAndTitle.set(key, []);
+      resourcesByCategoryAndTitle.get(key).push(r);
+    }
+
+    // Exams linked to the book = links on any row serving the canonical row's
+    // content (same storage_base_url) -- the definition the Books page count
+    // and the Link Exams drawer use. Counting every same-titled row instead
+    // treated links on a different stored copy (e.g. a second ENGLISH Precis)
+    // as covered, so Sync added nothing while the page counts stayed unequal.
+    function getExamIdsForBook(category, title, canonical) {
+      const examIds = new Set();
+      const rows = (resourcesByCategoryAndTitle.get(`${category}::${norm(title)}`) || [])
+        .filter(r => !canonical.storage_base_url || r.storage_base_url === canonical.storage_base_url);
+      for (const r of rows) {
+        for (const eid of mapsByResourceId.get(r.resource_id) || []) {
+          examIds.add(eid);
+        }
+      }
+      return examIds;
+    }
+
+    function getCanonicalResource(category, title, preferredResourceId) {
+      const rows = resourcesByCategoryAndTitle.get(`${category}::${norm(title)}`) || [];
+      if (preferredResourceId) {
+        const found = rows.find(r => r.resource_id === preferredResourceId);
+        if (found) return found;
+      }
+      return rows.find(r => r.format === 'blocks' && r.status === 'Published')
+        || rows.find(r => r.format === 'blocks')
+        || rows[0];
+    }
+
+    let targetPairs = [];
+    if (Array.isArray(pairs) && pairs.length > 0) {
+      for (const p of pairs) {
+        targetPairs.push({
+          title: p.title,
+          guideResourceId: p.guideResourceId || p.guide?.resourceId,
+          precisResourceId: p.precisResourceId || p.precis?.resourceId,
+        });
+      }
+    } else {
+      const guideTitles = new Set(
+        allResources.filter(r => r.category === 'Guide').map(r => norm(r.title)).filter(Boolean)
+      );
+      for (const titleNorm of guideTitles) {
+        const guideRows = resourcesByCategoryAndTitle.get(`Guide::${titleNorm}`);
+        const precisRows = resourcesByCategoryAndTitle.get(`Precis::${titleNorm}`);
+        if (guideRows?.length && precisRows?.length) {
+          targetPairs.push({
+            title: guideRows[0].title,
+            guideResourceId: guideRows[0].resource_id,
+            precisResourceId: precisRows[0].resource_id,
+          });
+        }
+      }
+    }
+
+    let guideAdded = 0;
+    let precisAdded = 0;
+    let pairsSynced = 0;
+    const errors = [];
+    const newMappings = [];
+
+    for (const pair of targetPairs) {
+      const guideCanonical = getCanonicalResource('Guide', pair.title, pair.guideResourceId);
+      const precisCanonical = getCanonicalResource('Precis', pair.title, pair.precisResourceId);
+
+      if (!guideCanonical || !precisCanonical) {
+        errors.push({ title: pair.title, error: 'Could not resolve canonical Guide or Precis book.' });
+        continue;
+      }
+
+      const guideExamIds = getExamIdsForBook('Guide', pair.title, guideCanonical);
+      const precisExamIds = getExamIdsForBook('Precis', pair.title, precisCanonical);
+      const unionExamIds = new Set([...guideExamIds, ...precisExamIds]);
+
+      for (const examId of unionExamIds) {
+        if (!guideExamIds.has(examId)) {
+          newMappings.push({
+            exam_id: examId,
+            resource_id: guideCanonical.resource_id,
+            category: 'Guide',
+            confidence: 'high',
+            reasoning: 'Synced from counterpart precis link',
+            source: 'manual',
+          });
+        }
+        if (!precisExamIds.has(examId)) {
+          newMappings.push({
+            exam_id: examId,
+            resource_id: precisCanonical.resource_id,
+            category: 'Precis',
+            confidence: 'high',
+            reasoning: 'Synced from counterpart guide link',
+            source: 'manual',
+          });
+        }
+      }
+      pairsSynced++;
+    }
+
+    // Upsert in batches of 100; on a batch failure retry row by row so one bad
+    // row doesn't sink the rest. Only rows that actually landed are counted.
+    const countAdded = (rows) => {
+      for (const r of rows) {
+        if (r.category === 'Guide') guideAdded++;
+        else precisAdded++;
+      }
+    };
+    const batchSize = 100;
+    for (let i = 0; i < newMappings.length; i += batchSize) {
+      const batch = newMappings.slice(i, i + batchSize);
+      const { error } = await supabase
+        .from('lc_exam_resource_map')
+        .upsert(batch, { onConflict: 'exam_id,resource_id', ignoreDuplicates: true });
+      if (!error) { countAdded(batch); continue; }
+      console.error('[books-sync-pairs] Batch upsert error:', error.message);
+      for (const item of batch) {
+        const { error: rowError } = await supabase
+          .from('lc_exam_resource_map')
+          .upsert(item, { onConflict: 'exam_id,resource_id', ignoreDuplicates: true });
+        if (rowError) errors.push({ examId: item.exam_id, resourceId: item.resource_id, error: rowError.message });
+        else countAdded([item]);
+      }
+    }
+
+    invalidateBooksCache();
+
+    return res.status(200).json({
+      ok: true,
+      pairsSynced,
+      totalAdded: guideAdded + precisAdded,
+      guideAdded,
+      precisAdded,
+      errors,
+    });
+  } catch (err) {
+    console.error('[admin/save-resource:books-sync-pairs] failed:', err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
+async function handleThemeDelete(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { id } = req.body;
+  if (!id) return res.status(400).json({ ok: false, error: 'Theme ID is required' });
+
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+
+    // A category-default pointer (category-default-intro/precis/guide) can
+    // reference this theme as its live default. Deleting the theme without
+    // also clearing those pointers leaves them dangling -- the category
+    // silently falls back to Academic for every reader until someone
+    // notices, which looks exactly like "my change didn't apply" or "another
+    // category's look bled into mine". Repoint any pointer aimed at this
+    // theme back to that category's own system default before deleting it.
+    const { data: pointerRows } = await supabaseAdmin
+      .from('lc_reader_themes')
+      .select('id, slug, tokens')
+      .in('slug', ['category-default-intro', 'category-default-precis', 'category-default-guide']);
+
+    const SYSTEM_FALLBACK = { Intro: 'modern', Precis: 'examPrep', Guide: 'academic' };
+    for (const row of pointerRows || []) {
+      if (row.tokens?.targetThemeId !== id) continue;
+      const cat = row.tokens?.category;
+      await supabaseAdmin.from('lc_reader_themes').update({
+        tokens: { category: cat, targetThemeId: SYSTEM_FALLBACK[cat] || 'academic' },
+        updated_at: new Date().toISOString(),
+      }).eq('id', row.id);
+    }
+
+    const { error } = await supabaseAdmin.from('lc_reader_themes').delete().eq('id', id);
+    if (error) return res.status(400).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
+async function handleThemeCategoryDefault(req, res) {
+  if (!checkAdminSecret(req, res)) return;
+  const { category, themeId } = req.body;
+  if (!category || !themeId) return res.status(400).json({ ok: false, error: 'Category and themeId are required' });
+
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    const slug = `category-default-${category.toLowerCase()}`;
+    const { data, error } = await supabaseAdmin.from('lc_reader_themes').upsert({
+      slug,
+      name: `${category} Active Theme`,
+      is_default: false,
+      is_system: true,
+      tokens: { category, targetThemeId: themeId },
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'slug' }).select().single();
+
+    if (error) return res.status(400).json({ ok: false, error: error.message });
+    return res.status(200).json({ ok: true, data });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
+async function handleThemeFetchAll(req, res) {
+  try {
+    const supabaseAdmin = getSupabaseAdmin();
+    const { data: themes, error: themesErr } = await supabaseAdmin
+      .from('lc_reader_themes')
+      .select('*')
+      .not('slug', 'like', 'category-default-%')
+      .order('created_at', { ascending: true });
+
+    if (themesErr) {
+      console.warn('[admin/save-resource:theme-fetch-all] themes warning:', themesErr.message);
+    }
+
+    const { data: defaults, error: defErr } = await supabaseAdmin
+      .from('lc_reader_themes')
+      .select('slug, tokens')
+      .in('slug', ['category-default-intro', 'category-default-precis', 'category-default-guide']);
+
+    if (defErr) {
+      console.warn('[admin/save-resource:theme-fetch-all] defaults warning:', defErr.message);
+    }
+
+    const categoryDefaults = {
+      Intro: 'modern',
+      Precis: 'examPrep',
+      Guide: 'academic',
+    };
+
+    if (defaults && defaults.length > 0) {
+      for (const row of defaults) {
+        const cat = row.tokens?.category;
+        const target = row.tokens?.targetThemeId;
+        if (cat && target) {
+          categoryDefaults[cat] = target;
+        }
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      themes: themes || [],
+      categoryDefaults,
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
+
+  if (req.body?.type === 'theme-fetch-all') {
+    return handleThemeFetchAll(req, res);
+  }
+  if (req.body?.type === 'theme-save') {
+    return handleThemeSave(req, res);
+  }
+  if (req.body?.type === 'theme-delete') {
+    return handleThemeDelete(req, res);
+  }
+  if (req.body?.type === 'theme-category-default') {
+    return handleThemeCategoryDefault(req, res);
+  }
+
+  if (req.body?.type === 'r2-upload') {
+    return handleR2Upload(req, res);
+  }
+
+  if (req.body?.type === 'docx-upload-url') {
+    return handleDocxUploadUrl(req, res);
+  }
+  if (req.body?.type === 'docx-preview-convert') {
+    return handleDocxPreviewConvert(req, res);
+  }
+  if (req.body?.type === 'content-publish') {
+    return handleContentPublish(req, res);
+  }
+
+  if (req.body?.type === 'books-list') {
+    return handleBooksList(req, res);
+  }
+
+  if (req.body?.type === 'books-get') {
+    return handleBooksGet(req, res);
+  }
+
+  if (req.body?.type === 'books-fetch-content') {
+    return handleBooksFetchContent(req, res);
+  }
+
+  if (req.body?.type === 'books-issues') {
+    return handleBooksIssues(req, res);
+  }
+
+  if (req.body?.type === 'books-save-chapter') {
+    return handleBooksSaveChapter(req, res);
+  }
+
+  if (req.body?.type === 'books-create') {
+    return handleBooksCreate(req, res);
+  }
+
+  if (req.body?.type === 'books-duplicate') {
+    return handleBooksDuplicate(req, res);
+  }
+
+  if (req.body?.type === 'books-rename') {
+    return handleBooksRename(req, res);
+  }
+
+  if (req.body?.type === 'books-save-tags') {
+    return handleBooksSaveTags(req, res);
+  }
+
+  if (req.body?.type === 'book-cover-get') {
+    return handleBookCoverGet(req, res);
+  }
+
+  if (req.body?.type === 'book-cover-save') {
+    return handleBookCoverSave(req, res);
+  }
+
+  if (req.body?.type === 'books-replace-with-existing') {
+    return handleBooksReplaceWithExisting(req, res);
+  }
+
+  if (req.body?.type === 'books-archive') {
+    return handleBooksArchive(req, res);
+  }
+
+  if (req.body?.type === 'books-unarchive') {
+    return handleBooksUnarchive(req, res);
+  }
+
+  if (req.body?.type === 'books-delete') {
+    return handleBooksDelete(req, res);
+  }
+
+  if (req.body?.type === 'books-find-count') {
+    return handleBooksFindCount(req, res);
+  }
+
+  if (req.body?.type === 'books-find-replace') {
+    return handleBooksFindReplace(req, res);
+  }
+
+  if (req.body?.type === 'books-sync-pairs') {
+    return handleBooksSyncPairs(req, res);
+  }
+
+  if (!supabaseUrl) {
+    return res.status(500).json({ error: 'Missing Supabase credentials on server' });
+  }
+
+  try {
+    const supabase = createClient(supabaseUrl, supabaseServiceKey || process.env.VITE_SUPABASE_ANON_KEY);
+
+    // Check if this is a V2 resource save call
+    if (req.body.metadata || req.body.version === 2) {
+      const { metadata, r2Urls } = req.body;
+      if (!metadata || !metadata.resource_id) {
+        return res.status(400).json({ error: 'Invalid resource metadata provided' });
+      }
+
+      const record = {
+        resource_id: metadata.resource_id,
+        file_hash: metadata.file_hash || '',
+        source_file: metadata.source_file || '',
+        title: metadata.title,
+        exam_name: metadata.exam_name || 'General Exam',
+        subject: metadata.subject || 'General',
+        category: metadata.category || 'Guide',
+        conducting_body: metadata.conducting_body || '',
+        website_url: metadata.website_url || '',
+        chapter_count: metadata.chapter_count || 0,
+        storage_base_url: r2Urls?.storage_base_url || `${process.env.R2_PUBLIC_URL || 'https://pub-82194047da2d4c1c8ff3a6284533ac21.r2.dev'}/structured_resources/${metadata.resource_id}/`,
+        metadata_url: r2Urls?.metadata_url || `${process.env.R2_PUBLIC_URL || 'https://pub-82194047da2d4c1c8ff3a6284533ac21.r2.dev'}/structured_resources/${metadata.resource_id}/metadata.json`,
+        thumbnail_url: r2Urls?.thumbnail_url || `${process.env.R2_PUBLIC_URL || 'https://pub-82194047da2d4c1c8ff3a6284533ac21.r2.dev'}/structured_resources/${metadata.resource_id}/thumbnail.png`,
+        is_freemium: metadata.is_freemium || false,
+        is_locked: metadata.is_locked !== undefined ? metadata.is_locked : true,
+        status: 'Published',
+        updated_at: new Date().toISOString()
+      };
+
+      const { data, error } = await supabase
+        .from('resources')
+        .upsert(record, { onConflict: 'resource_id' })
+        .select();
+
+      if (error) {
+        console.error('Supabase V2 Upsert Error:', error);
+        return res.status(400).json({ error: error.message });
+      }
+
+      invalidateBooksCache();
+      return res.status(200).json({ success: true, data });
+    }
+
+    return res.status(400).json({ error: 'Unrecognized save-resource request shape' });
+  } catch (err) {
+    console.error('Save Resource Error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+}

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <link rel="manifest" href="/site.webmanifest" />
+
+  <!-- SEO Meta Tags -->
+  <title>VeerNXT Portal | Empowering Ex-Servicemen</title>
+  <meta name="description" content="VeerNXT Portal provides intelligent career profiling, skill mapping, and job recommendations for ex-servicemen transitioning to civilian life." />
+  <meta name="keywords" content="Ex-Servicemen, VeerNXT, Armed Forces, Career Transition, Jobs for Veterans, Agniveer" />
+  <meta name="author" content="VeerNXT" />
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://veernxt.com/" />
+  <meta property="og:title" content="VeerNXT Portal | Empowering Ex-Servicemen" />
+  <meta property="og:description" content="VeerNXT Portal provides intelligent career profiling, skill mapping, and job recommendations for ex-servicemen transitioning to civilian life." />
+  <meta property="og:image" content="/logo.png" />
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:url" content="https://veernxt.com/" />
+  <meta name="twitter:title" content="VeerNXT Portal | Empowering Ex-Servicemen" />
+  <meta name="twitter:description" content="VeerNXT Portal provides intelligent career profiling, skill mapping, and job recommendations for ex-servicemen transitioning to civilian life." />
+  <meta name="twitter:image" content="/logo.png" />
+
+  <!-- Favicons -->
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+</head>
+
+<body>
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('theme') || localStorage.getItem('admin_theme');
+        var theme = saved === 'dark' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', theme);
+        if (theme === 'dark') {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+      } catch (e) {}
+    })();
+    // LandingPage.jsx is always dark (bg-[#0a0a0a]), but that class only
+    // exists once React mounts — paint the body dark on "/" right away so
+    // the landing page doesn't flash light. BodyThemeSync in App.jsx clears
+    // it on client-side navigation away from "/".
+    if (window.location.pathname === '/') {
+      document.body.style.background = '#0a0a0a';
+    }
+  </script>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+</body>
+
+</html>

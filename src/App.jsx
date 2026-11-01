@@ -1,0 +1,271 @@
+import { useState, useEffect } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
+import AuthGuard from './components/AuthGuard';
+import Login from './pages/Login';
+import AuthCallback from './pages/AuthCallback';
+import Profiling from './pages/Profiling';
+import ProfilingResults from './pages/ProfilingResults';
+import Dashboard from './pages/Dashboard';
+import EmployerOnboarding from './pages/EmployerOnboarding';
+import EmployerDashboard from './pages/EmployerDashboard';
+import EmployerReadyToHire from './pages/EmployerReadyToHire';
+import PostJobRequirement from './pages/PostJobRequirement';
+import PrivateSectorHome from './pages/PrivateSectorHome';
+import PrivateSectorProfile from './pages/PrivateSectorProfile';
+import PrivateSectorOpportunities from './pages/PrivateSectorOpportunities';
+import LearningCenter from './pages/LearningCenter';
+import ExamSyllabus from './pages/ExamSyllabus';
+import FinancialGuidance from './pages/FinancialGuidance';
+import SecureReader from './components/SecureReader';
+import AdminJobs from './pages/admin/AdminJobs';
+import AdminRewardsQueue from './pages/admin/AdminRewardsQueue';
+import AdminPrivateSector from './pages/admin/AdminPrivateSector';
+import AdminLegalAid from './pages/admin/AdminLegalAid';
+import PublicJobs from './pages/PublicJobs';
+import FindCandidates from './pages/FindCandidates';
+import MessagingWorkspace from './components/MessagingWorkspace';
+import Subscribe from './pages/Subscribe';
+import Network from './pages/Network';
+
+// Landing & Payment Bridge
+import { LandingPage } from './components/landing/LandingPage';
+import { PaymentPage } from './components/PaymentPage';
+import { supabase } from './lib/supabase';
+
+// New Legal Pages
+import PrivacyPolicy from './pages/PrivacyPolicy';
+import Support from './pages/Support';
+import Legal from './pages/Legal';
+import LegalAidCell from './pages/LegalAidCell';
+import InteractiveQuiz from './components/InteractiveQuiz';
+import QuizCenter from './pages/QuizCenter';
+import PyqCenter from './pages/PyqCenter';
+import PyqReader from './pages/PyqReader';
+import DemoExamCards from './pages/DemoExamCards';
+import StudyMaterialsPage from './pages/StudyMaterialsPage';
+import AdminLogin from './pages/admin/AdminLogin';
+import AdminShell from './pages/admin/AdminShell';
+import ExamsPage from './pages/admin/ExamsPage';
+import ConductingBodiesPage from './pages/admin/ConductingBodiesPage';
+import CategoriesPage from './pages/admin/CategoriesPage';
+import SubjectsPage from './pages/admin/SubjectsPage';
+import BannersPage from './pages/admin/BannersPage';
+import PublishContentPage from './pages/admin/PublishContentPage';
+import UsersPage from './pages/admin/UsersPage';
+import RolesPermissionsPage from './pages/admin/RolesPermissionsPage';
+import QuizzesPage from './pages/admin/QuizzesPage';
+import PyqPapersPage from './pages/admin/PyqPapersPage';
+import AdminQuizEditor from './pages/admin/AdminQuizEditor';
+import PyqPaperEditor from './pages/admin/PyqPaperEditor';
+import BooksPage from './pages/admin/BooksPage';
+import AdminProfilePage from './pages/admin/AdminProfilePage';
+import BookCoverStudio from './pages/admin/BookCoverStudio';
+import BookChapterBrowser from './pages/admin/BookChapterBrowser';
+import ReaderThemesGallery from './pages/admin/ReaderThemesGallery';
+import ThemeEditor from './pages/admin/ThemeEditor';
+import CVBuilder from './pages/CVBuilder';
+import RewardsCenter from './pages/RewardsCenter';
+import PreviewFinanceSuites from './pages/PreviewFinanceSuites';
+import DevReader from './pages/sandbox/DevReader';
+import QuizPreview from './pages/sandbox/QuizPreview';
+import ProfilingTester from './pages/ProfilingTester';
+import AiChatbotWidget from './components/AiChatbotWidget';
+import V2Layout from './v2/V2Layout';
+import UniversalLanding from './v2/UniversalLanding';
+import './v2/tactical-messages.css';
+import V2Messages from './v2/V2Messages';
+import { ThemeProvider, useTheme } from './context/ThemeContext';
+import './index.css';
+
+/**
+ * index.html has an inline script that sets a dark <body> background on
+ * first load if the URL is "/", so the dark landing page doesn't flash
+ * light before React mounts. That inline style would otherwise stick
+ * around on every page reached via client-side navigation afterward, so
+ * keep it in sync with the current route.
+ */
+const BodyThemeSync = () => {
+  const location = useLocation();
+  const { isDark } = useTheme();
+  useEffect(() => {
+    // The landing page sets its own background: white in light mode, near-black in dark mode.
+    document.body.style.background = location.pathname === '/' ? (isDark ? '#0a0a0a' : '#ffffff') : '';
+  }, [location.pathname, isDark]);
+  return null;
+};
+
+/**
+ * RootRoute Component
+ * - If user is NOT signed in -> Renders LandingPage.
+ * - If user IS signed in -> Redirects directly to /home (the home page).
+ */
+const RootRoute = () => {
+  const [session, setSession] = useState(undefined);
+
+  useEffect(() => {
+    let mounted = true;
+
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (error) {
+        supabase.auth.signOut().catch(() => {});
+        if (mounted) setSession(null);
+        return;
+      }
+      if (mounted) setSession(data?.session || null);
+    }).catch(() => {
+      supabase.auth.signOut().catch(() => {});
+      if (mounted) setSession(null);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, s) => {
+      if (event === 'SIGNED_OUT' || !s) {
+        if (mounted) setSession(null);
+      } else {
+        if (mounted) setSession(s);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription?.unsubscribe?.();
+    };
+  }, []);
+
+  // Loading state
+  if (session === undefined) {
+    return (
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        height: '100vh',
+        background: '#0a0a0a',
+        color: '#ffffff',
+      }}>
+        <div style={{
+          width: '40px',
+          height: '40px',
+          border: '3px solid rgba(255,255,255,0.2)',
+          borderTop: '3px solid #8BB85C',
+          borderRadius: '50%',
+          animation: 'spin 0.8s linear infinite',
+        }} />
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
+
+  // If signed in -> redirect to the home page (/home)
+  if (session) {
+    return <Navigate to="/home" replace />;
+  }
+
+  // If not signed in -> render landing page
+  return <LandingPage />;
+};
+
+function App() {
+  return (
+    <ThemeProvider>
+      <Router>
+        <BodyThemeSync />
+        <AiChatbotWidget />
+        <Routes>
+        {/* Landing / Root Handler */}
+        <Route path="/" element={<RootRoute />} />
+        
+        <Route path="/login" element={<Login />} />
+        <Route path="/auth/callback" element={<AuthCallback />} />
+        <Route path="/financial-guidance" element={<FinancialGuidance />} />
+        <Route path="/preview-services" element={<PreviewFinanceSuites />} />
+        <Route path="/pay" element={<PaymentPage />} />
+
+        {/* Signed-in pages share the slim header (Learning, Jobs, Finance, Legal) */}
+        <Route element={<V2Layout />}>
+          <Route path="/profiling" element={<AuthGuard skipProfilingCheck><Profiling /></AuthGuard>} />
+          <Route path="/profiling/results" element={<AuthGuard skipProfilingCheck><ProfilingResults /></AuthGuard>} />
+          <Route path="/subscribe" element={<AuthGuard skipProfilingCheck><Subscribe /></AuthGuard>} />
+          <Route path="/dashboard" element={<AuthGuard><Dashboard /></AuthGuard>} />
+          <Route path="/employer/onboarding" element={<AuthGuard skipProfilingCheck><EmployerOnboarding /></AuthGuard>} />
+          <Route path="/employer/dashboard" element={<AuthGuard skipProfilingCheck><EmployerDashboard /></AuthGuard>} />
+          <Route path="/employer/ready-to-hire" element={<AuthGuard skipProfilingCheck><EmployerReadyToHire /></AuthGuard>} />
+          <Route path="/employer/post-job" element={<AuthGuard skipProfilingCheck><PostJobRequirement /></AuthGuard>} />
+          <Route path="/private-sector" element={<AuthGuard><PrivateSectorHome /></AuthGuard>} />
+          <Route path="/private-sector/profile" element={<AuthGuard><PrivateSectorProfile /></AuthGuard>} />
+          <Route path="/private-sector/opportunities" element={<AuthGuard><PrivateSectorOpportunities /></AuthGuard>} />
+          <Route path="/learning-center" element={<AuthGuard><LearningCenter /></AuthGuard>} />
+          <Route path="/exam/:examId" element={<AuthGuard><ExamSyllabus /></AuthGuard>} />
+          <Route path="/jobs" element={<AuthGuard><PublicJobs /></AuthGuard>} />
+          <Route path="/find-candidates" element={<AuthGuard><FindCandidates /></AuthGuard>} />
+          <Route path="/messaging" element={<AuthGuard><MessagingWorkspace /></AuthGuard>} />
+          <Route path="/network" element={<AuthGuard><Network /></AuthGuard>} />
+          <Route path="/quiz/:id" element={<AuthGuard><InteractiveQuiz /></AuthGuard>} />
+          <Route path="/quiz-center" element={<AuthGuard><QuizCenter /></AuthGuard>} />
+          <Route path="/pyq-center" element={<AuthGuard><PyqCenter /></AuthGuard>} />
+          <Route path="/pyq-reader/:id" element={<AuthGuard><PyqReader /></AuthGuard>} />
+          <Route path="/privacy" element={<PrivacyPolicy />} />
+          <Route path="/support" element={<Support />} />
+          <Route path="/legal" element={<Legal />} />
+          <Route path="/legal-aid" element={<LegalAidCell />} />
+          <Route path="/cv" element={<AuthGuard><CVBuilder /></AuthGuard>} />
+          <Route path="/rewards" element={<AuthGuard><RewardsCenter /></AuthGuard>} />
+          <Route path="/demo-cards" element={<DemoExamCards />} />
+          <Route path="/study-materials" element={<StudyMaterialsPage />} />
+        </Route>
+
+        <Route path="/v2/learning/*" element={<Navigate to="/learning-center" replace />} />
+        <Route path="/v2" element={<Navigate to="/home" replace />} />
+        <Route path="/v2/me" element={<Navigate to="/home/me" replace />} />
+        <Route path="/v2/messages" element={<Navigate to="/home/messages" replace />} />
+
+        {/* v2 — new universal landing + section modules (old routes untouched) */}
+        <Route element={<AuthGuard><V2Layout /></AuthGuard>}>
+          <Route path="/home" element={<UniversalLanding />} />
+          <Route path="/home/me" element={<Dashboard />} />
+          <Route path="/home/messages" element={<V2Messages />} />
+        </Route>
+
+        {/* Full-screen reader — no global Header/Footer/BottomNav chrome,
+            so its own nav bar (Back / Scroll / Flipbook toggle) is the
+            only bar on the page. */}
+        <Route path="/reader/:id" element={<AuthGuard skipProfilingCheck><SecureReader /></AuthGuard>} />
+        <Route path="/dev-reader" element={<DevReader />} />
+        <Route path="/dev-quiz-preview" element={<QuizPreview />} />
+        <Route path="/profiling-tester" element={<ProfilingTester />} />
+        <Route path="/admin/profiling-tester" element={<ProfilingTester />} />
+
+        {/* Admin Routes */}
+        <Route path="/admin/login" element={<AdminLogin />} />
+        <Route element={<AdminShell />}>
+          <Route path="/admin" element={<Navigate to="/admin/exams" replace />} />
+          <Route path="/admin/exams" element={<ExamsPage />} />
+          <Route path="/admin/books" element={<BooksPage />} />
+          <Route path="/admin/book-covers" element={<BookCoverStudio />} />
+          <Route path="/admin/reader-themes" element={<ReaderThemesGallery />} />
+          <Route path="/admin/conducting-bodies" element={<ConductingBodiesPage />} />
+          <Route path="/admin/categories" element={<CategoriesPage />} />
+          <Route path="/admin/subjects" element={<SubjectsPage />} />
+          <Route path="/admin/banners" element={<BannersPage />} />
+          <Route path="/admin/publish-content" element={<PublishContentPage />} />
+          <Route path="/admin/users" element={<UsersPage />} />
+          <Route path="/admin/roles" element={<RolesPermissionsPage />} />
+          <Route path="/admin/profile" element={<AdminProfilePage />} />
+          <Route path="/admin/quizzes" element={<QuizzesPage />} />
+          <Route path="/admin/pyq-papers" element={<PyqPapersPage />} />
+          <Route path="/admin/jobs" element={<AdminJobs />} />
+          <Route path="/admin/rewards" element={<AdminRewardsQueue />} />
+          <Route path="/admin/private-sector" element={<AdminPrivateSector />} />
+          <Route path="/admin/legal-aid" element={<AdminLegalAid />} />
+        </Route>
+        <Route path="/admin/quiz/:id?" element={<AdminQuizEditor />} />
+        <Route path="/admin/pyq/:id" element={<PyqPaperEditor />} />
+        <Route path="/admin/books/:category/:book" element={<BookChapterBrowser />} />
+        <Route path="/admin/reader-themes/new" element={<ThemeEditor />} />
+        <Route path="/admin/reader-themes/:themeId" element={<ThemeEditor />} />
+      </Routes>
+    </Router>
+  </ThemeProvider>
+  );
+}
+
+export default App;

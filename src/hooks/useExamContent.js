@@ -1,0 +1,353 @@
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { supabase } from '../lib/supabase';
+import { MIN_PLAYABLE_QUESTIONS } from '../lib/quizQuality';
+
+const TRACKABLE_CATEGORIES = ['Guide', 'Precis', 'PYQ'];
+
+// Progress for the "Mission Objective" banner (TodayObjectiveCard) — counts
+// only the categories a candidate actually works through page by page
+// (Intro is a single curated blurb, not a checklist item).
+export function countProgress(byCategory, completedResourceIds) {
+  let totalCount = 0;
+  let completedCount = 0;
+  for (const cat of TRACKABLE_CATEGORIES) {
+    for (const res of byCategory?.[cat] || []) {
+      totalCount += 1;
+      if (completedResourceIds?.has(res.resource_id)) completedCount += 1;
+    }
+  }
+  return { completedCount, totalCount };
+}
+
+const RESOURCE_CATEGORIES = ['Intro', 'Guide', 'Precis', 'PYQ'];
+
+// Precomputed exam -> resources mapping (lc_exam_resource_map, built up by
+// PublishContentPage.jsx/LinkExamsDrawer.jsx/ExamResourcesPanel.jsx as well
+// as the older Gemini scripts) — checked first when an examId is
+// available. No FK to resources (that table has no unique constraint
+// Postgres can target), so this is two queries: mapping rows, then the
+// resources they point at.
+//
+// Returns which CATEGORIES this exam has a real map row for, not just
+// whether it has any row at all -- the caller falls back to exam-name
+// matching per category, only for whichever categories aren't covered
+// here. An earlier version returned null/non-null for the whole exam: any
+// single mapped row (e.g. just Intro) silently hid every other category
+// that was otherwise only reachable via the fallback, since the fallback
+// never ran at all once the exam had *a* mapping. Confirmed live 2026-09-17:
+// 18 exams had real Guide/Precis content sitting unreachable this way.
+async function fetchMappedResources(examId) {
+  const { data: mappings } = await supabase
+    .from('lc_exam_resource_map')
+    .select('resource_id, category')
+    .eq('exam_id', examId);
+  if (!mappings || mappings.length === 0) return { resources: [], mappedCategories: new Set() };
+
+  const resourceIds = mappings.map((m) => m.resource_id);
+  const { data: resources } = await supabase.from('resources').select('*').in('resource_id', resourceIds);
+  return { resources: resources || [], mappedCategories: new Set(mappings.map((m) => m.category)) };
+}
+
+// resources exam_name carries a "N. " ordinal prefix from CMS ingestion
+// that the unified exams.exam_name never has, so an exact match misses
+// real, published content — exact -> ilike substring -> career-track
+// keyword fallback, same chain proven in Dashboard.jsx's old
+// PreparationPanel. Used only for whichever categories fetchMappedResources
+// above didn't already have a real map row for (see its own comment);
+// quizzes always use this chain since lc_exam_quiz_map has never actually
+// been populated (0 rows as of 2026-09-17, see status_report.md).
+async function fetchResourcesFallback(examName, careerTrack) {
+  let resData = await supabase.from('resources').select('*').eq('exam_name', examName);
+
+  if (!resData.data || resData.data.length === 0) {
+    const escaped = examName.replace(/[%_]/g, (c) => `\\${c}`);
+    resData = await supabase.from('resources').select('*').ilike('exam_name', `%${escaped}%`);
+  }
+
+  if ((!resData.data || resData.data.length === 0) && careerTrack) {
+    const fallbackTerm = careerTrackKeyword(examName, careerTrack);
+    resData = await supabase.from('resources').select('*').ilike('exam_name', `%${fallbackTerm}%`);
+  }
+
+  return resData.data || [];
+}
+
+// resources has one row per exam-folder copy of the same canonical
+// document (e.g. ~850 separate "ENGLISH" rows, one per exam), so a
+// resource picked by exam-name matching or lc_exam_resource_map may be a
+// different physical row than the one scripts/migrate_resources_to_blocks.mjs
+// updated to the new format for that same title — verified live: of 9,766
+// migrated rows, only 138 were the exact resource_id the mapping table
+// referenced. Redirect any 'html' resource to its 'blocks' sibling (same
+// title + category) when one exists, so a migrated title actually shows
+// the new format regardless of which duplicate row got selected upstream.
+async function upgradeToCanonicalFormat(resources) {
+  const needsUpgrade = resources.filter((r) => r.format !== 'blocks' && r.title);
+  if (needsUpgrade.length === 0) return resources;
+
+  const titles = [...new Set(needsUpgrade.map((r) => r.title.trim()))];
+  const { data: canonicalRows } = await supabase
+    .from('resources')
+    .select('resource_id,title,category,format,storage_base_url')
+    .eq('format', 'blocks')
+    .in('title', titles);
+  if (!canonicalRows || canonicalRows.length === 0) return resources;
+
+  const canonicalByKey = new Map();
+  for (const c of canonicalRows) {
+    const key = `${c.title.trim().toLowerCase()}::${c.category}`;
+    if (!canonicalByKey.has(key)) canonicalByKey.set(key, c);
+  }
+
+  return resources.map((r) => {
+    if (r.format === 'blocks' || !r.title) return r;
+    const canonical = canonicalByKey.get(`${r.title.trim().toLowerCase()}::${r.category}`);
+    return canonical ? { ...r, resource_id: canonical.resource_id, format: canonical.format, storage_base_url: canonical.storage_base_url } : r;
+  });
+}
+
+// Guaranteed one-row-per-exam Intro slot (sql/lc_exam_intro.sql, admin CMS
+// housekeeping) -- the single curated source of truth for the exam's
+// Introduction, independent of lc_exam_resource_map's ambiguity and RLS
+// gap. When there's no dedicated Introduction (never set, or removed by
+// admin), falls back to whatever resource is linked as category 'Intro'
+// via the general Add Resource mapping (lc_exam_resource_map), if any --
+// so removing the dedicated one doesn't blank the section out while an
+// Add Resource Intro is still sitting there. Only when neither exists
+// does this return null, so the syllabus page omits the section entirely
+// rather than showing an empty placeholder.
+async function fetchExamIntro(examId) {
+  const { data: intro } = await supabase.from('lc_exam_intro').select('*').eq('exam_id', examId).maybeSingle();
+
+  if (intro?.source === 'auto' && intro.resource_id) {
+    const { data: resource } = await supabase.from('resources').select('*').eq('resource_id', intro.resource_id).maybeSingle();
+    if (resource) return { source: 'auto', resource };
+  } else if (intro?.source === 'manual' && (intro.manual_title || intro.manual_body)) {
+    return { source: 'manual', title: intro.manual_title, body: intro.manual_body };
+  }
+
+  const { data: mapRows } = await supabase
+    .from('lc_exam_resource_map')
+    .select('resource_id')
+    .eq('exam_id', examId)
+    .eq('category', 'Intro')
+    .limit(1);
+  const fallbackResourceId = mapRows?.[0]?.resource_id;
+  if (fallbackResourceId) {
+    const { data: resource } = await supabase.from('resources').select('*').eq('resource_id', fallbackResourceId).maybeSingle();
+    if (resource) return { source: 'auto', resource };
+  }
+
+  return null;
+}
+
+function careerTrackKeyword(examName, careerTrack) {
+  if (careerTrack === 'POLICE_CAPF') return 'Constable';
+  if (careerTrack === 'SSC') return 'SSC';
+  if (careerTrack === 'RAILWAYS') return 'RRB';
+  if (careerTrack === 'BANKING') return 'IBPS';
+  if (careerTrack === 'DEFENCE') return 'Defence';
+  return examName.split(' ')[0];
+}
+
+async function fetchQuizzesForExam(examName, careerTrack, examId, category = 'Mock Test') {
+  // 1. Exact link: quizzes.lc_exam_id (set when the mock test was ingested from the exam's own Drive folder).
+  //    Quizzes with too few playable questions are held back until the content team fixes them.
+  if (examId) {
+    const linked = await supabase
+      .from('quizzes')
+      .select('*')
+      .eq('lc_exam_id', examId)
+      .eq('category', category)
+      .gte('playable_questions', MIN_PLAYABLE_QUESTIONS)
+      .order('title');
+    if (linked.data && linked.data.length > 0) return linked.data;
+  }
+
+  // 2. Explicit admin mapping: lc_exam_quiz_map.
+  try {
+    if (examId) {
+      const { data: mapRows } = await supabase
+        .from('lc_exam_quiz_map')
+        .select('quiz_id')
+        .eq('exam_id', examId);
+      if (mapRows && mapRows.length > 0) {
+        const quizIds = mapRows.map((r) => r.quiz_id).filter(Boolean);
+        if (quizIds.length > 0) {
+          const { data: mappedQuizzes } = await supabase
+            .from('quizzes')
+            .select('*')
+            .in('id', quizIds);
+          if (mappedQuizzes && mappedQuizzes.length > 0) {
+            return mappedQuizzes;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('lc_exam_quiz_map query error:', e);
+  }
+
+  // 3. Legacy name matching -- ONLY for quizzes not linked to a specific exam, so a quiz linked to one exam
+  //    (e.g. West Bengal Police "Constable") can never show up under another exam that shares the name.
+  let quizData = await supabase.from('quizzes').select('*').is('lc_exam_id', null).eq('exam_name', examName).eq('category', category);
+
+  if (!quizData.data || quizData.data.length === 0) {
+    const escaped = examName.replace(/[%_]/g, (c) => `\\${c}`);
+    quizData = await supabase.from('quizzes').select('*').is('lc_exam_id', null).ilike('exam_name', `%${escaped}%`).eq('category', category);
+  }
+
+  if ((!quizData.data || quizData.data.length === 0) && careerTrack) {
+    const fallbackTerm = careerTrackKeyword(examName, careerTrack);
+    quizData = await supabase.from('quizzes').select('*').is('lc_exam_id', null).ilike('exam_name', `%${fallbackTerm}%`).eq('category', category);
+  }
+
+  return quizData.data || [];
+}
+
+function groupByCategory(resources) {
+  const byCategory = Object.fromEntries(RESOURCE_CATEGORIES.map((c) => [c, []]));
+  for (const res of resources) {
+    const cat = RESOURCE_CATEGORIES.find((c) => c.toLowerCase() === (res.category || '').toLowerCase().trim());
+    (byCategory[cat] || (byCategory.Other ||= [])).push(res);
+  }
+  return byCategory;
+}
+
+// Same mapped-resources-first, name-matching-fallback resolution
+// useExamContent uses for its full content lookup, but count-only -- lets
+// any card/badge that just needs "how many resources does this exam have"
+// (Recommended for You, Popular Exams) get the real number without a plain
+// `resources.exam_name` exact-match count, which undercounts (often to 0)
+// because resources.exam_name carries a "N. " ordinal prefix the catalog's
+// exam name never has (see fetchResourcesFallback above).
+export async function getExamResourceCount(examId, examName) {
+  if (!examName) return 0;
+  const mapped = examId ? await fetchMappedResources(examId) : { resources: [], mappedCategories: new Set() };
+  const uncoveredCategories = RESOURCE_CATEGORIES.filter((c) => !mapped.mappedCategories.has(c));
+  if (uncoveredCategories.length === 0) return mapped.resources.length;
+  const fallbackResources = await fetchResourcesFallback(examName, null);
+  const fallbackCount = fallbackResources.filter((r) =>
+    uncoveredCategories.some((c) => c.toLowerCase() === (r.category || '').toLowerCase().trim())
+  ).length;
+  return mapped.resources.length + fallbackCount;
+}
+
+/**
+ * Full (non-teaser) content lookup for an exam, grouped by category —
+ * used by the exam syllabus page (src/pages/ExamSyllabus.jsx) and
+ * ExamContentPreview.jsx. Prefers the precomputed lc_exam_resource_map
+ * (examId) for resources, per category -- falls back to the exam-name
+ * matching chain only for whichever categories aren't mapped yet, so
+ * nothing regresses for exams/categories the mapping work hasn't reached.
+ * `intro` is separate from `byCategory.Intro` -- sourced from
+ * lc_exam_intro, the guaranteed one-row-per-exam table the admin CMS's
+ * Introduction card manages, rather than the ambiguous multi-row Intro
+ * category in the resource-mapping chain above.
+ */
+export function useExamContent(examName, careerTrack, examId) {
+  const navigate = useNavigate();
+  const [byCategory, setByCategory] = useState(() => groupByCategory([]));
+  const [quizzes, setQuizzes] = useState([]);
+  const [intro, setIntro] = useState(null);
+  const [completedResourceIds, setCompletedResourceIds] = useState(new Set());
+  const [loading, setLoading] = useState(Boolean(examName));
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!examName) return;
+    let mounted = true;
+    setLoading(true);
+    setError(null);
+
+    (async () => {
+      try {
+        const [mappedResult, quizRows, introData] = await Promise.all([
+          examId ? fetchMappedResources(examId) : Promise.resolve({ resources: [], mappedCategories: new Set() }),
+          fetchQuizzesForExam(examName, careerTrack, examId),
+          examId ? fetchExamIntro(examId) : Promise.resolve(null),
+        ]);
+
+        const uncoveredCategories = RESOURCE_CATEGORIES.filter((c) => !mappedResult.mappedCategories.has(c));
+        const fallbackResources = uncoveredCategories.length > 0 ? await fetchResourcesFallback(examName, careerTrack) : [];
+        const rawResources = [
+          ...mappedResult.resources,
+          ...fallbackResources.filter((r) => uncoveredCategories.some((c) => c.toLowerCase() === (r.category || '').toLowerCase().trim())),
+        ];
+        const resources = await upgradeToCanonicalFormat(rawResources);
+
+        // Fetch completed resources for current user
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user && mounted) {
+          try {
+            const { data: reads } = await supabase
+              .from('user_resource_reads')
+              .select('resource_id, status')
+              .eq('user_id', session.user.id)
+              .eq('status', 'completed');
+            if (reads && mounted) {
+              setCompletedResourceIds(new Set(reads.map((r) => r.resource_id)));
+            }
+          } catch (e) {
+            console.warn('user_resource_reads query fallback:', e);
+          }
+        }
+
+        if (!mounted) return;
+        const grouped = groupByCategory(resources);
+        if (introData?.resource && (!grouped['Intro'] || grouped['Intro'].length === 0)) {
+          grouped['Intro'] = [introData.resource];
+        }
+        setByCategory(grouped);
+        setQuizzes(quizRows);
+        setIntro(introData);
+      } catch (err) {
+        console.error('Error fetching exam content:', err);
+        if (mounted) setError('Unable to load content for this exam.');
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+
+    return () => { mounted = false; };
+  }, [examName, careerTrack, examId]);
+
+  const markAsCompleted = async (resourceId, subjectKey, completed = true) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) {
+      navigate('/login');
+      return false;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('user_resource_reads')
+        .upsert(
+          {
+            user_id: session.user.id,
+            resource_id: resourceId,
+            exam_id: examId || null,
+            subject_key: subjectKey || null,
+            status: completed ? 'completed' : 'not_started',
+            completed_at: completed ? new Date().toISOString() : null,
+          },
+          { onConflict: 'user_id,resource_id' }
+        );
+
+      if (error) throw error;
+      setCompletedResourceIds((prev) => {
+        const next = new Set(prev);
+        if (completed) next.add(resourceId);
+        else next.delete(resourceId);
+        return next;
+      });
+      return true;
+    } catch (err) {
+      console.error('Error updating resource completion:', err);
+      return false;
+    }
+  };
+
+  return { byCategory, quizzes, intro, completedResourceIds, markAsCompleted, loading, error };
+}

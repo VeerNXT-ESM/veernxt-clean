@@ -1,0 +1,654 @@
+import { useState, useEffect, useMemo } from 'react';
+import { Plus, Trash2, Search, X, Eye, ExternalLink, Info, BookOpen, FileText, ClipboardList } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
+import { examsAlreadyHavingResource, loadResourceKeys, isSameResource } from '../../lib/resourceDuplicates';
+import Select from '../../components/ui/Select';
+import AdminResourcePreview from './AdminResourcePreview';
+import { adminFrom } from '../../lib/adminDb';
+
+const ADMIN_SECRET = import.meta.env.VITE_ADMIN_API_SECRET;
+
+const CATEGORY_ORDER = ['Intro', 'Guide', 'Precis'];
+
+// Icon/colour per real lc_exam_resource_map.category value. PYQ is a real,
+// schema-backed 4th category (see that table's CHECK constraint) even
+// though it has no dedicated tab below -- it still gets a real icon/pill,
+// just reached via "All" or the type filter rather than its own tab.
+const CATEGORY_ICON = { Intro: Info, Guide: BookOpen, Precis: FileText, PYQ: ClipboardList };
+const CATEGORY_COLOR = {
+  Intro: { bg: 'rgba(59, 130, 246, 0.14)', fg: '#3b82f6' },
+  Guide: { bg: 'rgba(16, 185, 129, 0.14)', fg: '#10b981' },
+  Precis: { bg: 'rgba(139, 92, 246, 0.14)', fg: '#8b5cf6' },
+  PYQ: { bg: 'rgba(245, 158, 11, 0.14)', fg: '#f59e0b' },
+};
+const DEFAULT_CATEGORY_COLOR = { bg: 'var(--surface-alt)', fg: 'var(--admin-text-muted)' };
+
+// lc_exam_resource_map.source -- how this mapping was created, real and
+// already stored, just not surfaced anywhere in the UI before.
+const SOURCE_LABEL = { manual: 'Manually added', gemini: 'Auto-detected', exact_name: 'Auto-matched', auto: 'Auto-detected' };
+
+// Tabs mirror the categories the "+" buttons already used to manage
+// individually; "All" folds every mapped category (including PYQ / any
+// legacy value) into one flat, searchable list instead of stacked
+// per-category sections.
+const RESOURCE_TABS = [{ key: 'all', label: 'All' }, ...CATEGORY_ORDER.map((c) => ({ key: c, label: c }))];
+const TYPE_FILTER_OPTIONS = [{ value: '', label: 'All Types' }, ...CATEGORY_ORDER.map((c) => ({ value: c, label: c })), { value: 'PYQ', label: 'PYQ' }];
+
+// Same Level convention every other admin list uses.
+const LEVEL_OPTIONS = [
+  { value: '', label: 'All Levels' },
+  { value: 'central', label: 'Central' },
+  { value: 'state', label: 'State' },
+  { value: 'ut', label: 'UT' },
+];
+
+/**
+ * Full-width section below the Exams workspace grid — shows what's actually
+ * mapped to this exam in the live content system (lc_exam_resource_map +
+ * resources), the table the candidate-facing Learning Center reads via
+ * useExamContent.js. There was no admin visibility into this at all before
+ * this panel: the "Subjects in this Exam" section that used to sit here
+ * (removed 2026-09-08) read a different, now-dropped legacy table family
+ * (lc_resources/lc_subjects) that no candidate route ever queried.
+ */
+const ExamResourcesPanel = ({ examId }) => {
+  const [mappings, setMappings] = useState([]);
+  const [loading, setLoading] = useState(false);
+  // null means the Add-Resource drawer is closed; a string is the category
+  // it opens pre-filtered to ('' for no pre-filter, from the "All" tab).
+  const [addDrawerCategory, setAddDrawerCategory] = useState(null);
+  const [previewResourceId, setPreviewResourceId] = useState(null);
+  const [activeTab, setActiveTab] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('');
+  const [search, setSearch] = useState('');
+
+  // Tab clicks and the type-filter dropdown drive the same underlying
+  // category filter (a category picked from either control fully expresses
+  // the other) -- kept as one shared value so the two controls can never
+  // disagree about what's currently shown.
+  const categoryFilter = typeFilter || (activeTab === 'all' ? '' : activeTab);
+  const chooseTab = (key) => { setActiveTab(key); setTypeFilter(''); };
+  const chooseType = (value) => { setTypeFilter(value); setActiveTab(value ? '' : 'all'); };
+
+  const fetchMappings = async (id) => {
+    setLoading(true);
+    const [{ data: rows }, { data: introRow }] = await Promise.all([
+      supabase
+        .from('lc_exam_resource_map')
+        .select('id, resource_id, category, confidence, source')
+        .eq('exam_id', id)
+        .order('category', { ascending: true }),
+      supabase
+        .from('lc_exam_intro')
+        .select('resource_id, manual_title')
+        .eq('exam_id', id)
+        .maybeSingle(),
+    ]);
+
+    let combinedRows = [...(rows || [])];
+    if (introRow?.resource_id && !combinedRows.some((r) => r.resource_id === introRow.resource_id && r.category === 'Intro')) {
+      combinedRows.push({
+        id: `intro-${id}`,
+        resource_id: introRow.resource_id,
+        category: 'Intro',
+        confidence: 'high',
+        source: 'auto',
+      });
+    }
+
+    const resourceIds = [...new Set(combinedRows.map((r) => r.resource_id).filter(Boolean))];
+    let resourcesById = {};
+    if (resourceIds.length) {
+      const { data: resourceRows } = await supabase.from('resources').select('resource_id, title, status, category').in('resource_id', resourceIds);
+      resourcesById = (resourceRows || []).reduce((acc, r) => { acc[r.resource_id] = r; return acc; }, {});
+    }
+    setMappings(combinedRows.map((r) => ({
+      ...r,
+      resource: resourcesById[r.resource_id] || (r.id === `intro-${id}` && introRow?.manual_title ? { resource_id: r.resource_id, title: introRow.manual_title, status: 'Published' } : null),
+    })));
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    setAddDrawerCategory(null);
+    setPreviewResourceId(null);
+    if (!examId) { setMappings([]); return; }
+    fetchMappings(examId);
+  }, [examId]);
+
+  const removeMapping = async (mapping) => {
+    if (!window.confirm(`Remove "${mapping.resource?.title || 'this resource'}" from this exam? The resource itself is untouched — this only removes the link.`)) return;
+    // An Intro stored only in lc_exam_intro is shown as a synthetic row (fake
+    // id `intro-<examId>`, see fetchMappings) with no lc_exam_resource_map
+    // row behind it -- its link lives in lc_exam_intro, keyed by exam_id.
+    const isSyntheticIntro = mapping.id === `intro-${examId}`;
+    const { error } = isSyntheticIntro
+      ? await adminFrom('lc_exam_intro').delete().eq('exam_id', examId)
+      : await adminFrom('lc_exam_resource_map').delete().eq('id', mapping.id);
+    if (error) { alert('Failed: ' + error.message); return; }
+    // A real Intro map row can also have a matching lc_exam_intro row; leave
+    // it and the Intro would reappear (as a synthetic row) on the next fetch.
+    if (!isSyntheticIntro && mapping.category === 'Intro' && mapping.resource_id) {
+      await adminFrom('lc_exam_intro').delete().eq('exam_id', examId).eq('resource_id', mapping.resource_id);
+    }
+    setMappings((prev) => prev.filter((m) => m.id !== mapping.id));
+  };
+
+  const tabCounts = useMemo(() => ({
+    all: mappings.length,
+    ...Object.fromEntries(CATEGORY_ORDER.map((c) => [c, mappings.filter((m) => m.category === c).length])),
+  }), [mappings]);
+
+  const visibleMappings = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return mappings.filter((m) => {
+      if (categoryFilter && m.category !== categoryFilter) return false;
+      if (q && !(m.resource?.title || '').toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [mappings, categoryFilter, search]);
+
+  return (
+    <div className="lc-card">
+      <div className="lc-card-row-header">
+        <h3 style={{ margin: 0 }}>Resources ({mappings.length})</h3>
+        {examId && (
+          <button className="lc-btn primary" onClick={() => setAddDrawerCategory(categoryFilter || '')}>
+            <Plus size={14} /> Add Resource
+          </button>
+        )}
+      </div>
+
+      {!examId ? (
+        <span className="lc-muted-note">Save the exam first to assign resources.</span>
+      ) : loading ? (
+        <span className="lc-muted-note">Loading…</span>
+      ) : (
+        <>
+          <div className="lc-editor-tabs" style={{ marginTop: '0.85rem' }}>
+            {RESOURCE_TABS.map((tab) => (
+              <button
+                key={tab.key}
+                className={`lc-editor-tab ${activeTab === tab.key ? 'active' : ''}`}
+                onClick={() => chooseTab(tab.key)}
+              >
+                {tab.label} ({tabCounts[tab.key] ?? 0})
+              </button>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.5rem', margin: '0.75rem 0' }}>
+            <div className="lc-search-input-wrapper" style={{ flex: 1 }}>
+              <Search size={16} />
+              <input type="text" placeholder="Search resources..." value={search} onChange={(e) => setSearch(e.target.value)} />
+            </div>
+            <div style={{ minWidth: 120 }}>
+              <Select value={typeFilter} onChange={(e) => chooseType(e.target.value)} options={TYPE_FILTER_OPTIONS} />
+            </div>
+          </div>
+
+          <div className="lc-resource-rows-scroll">
+            {visibleMappings.map((m) => (
+              <ResourceMapRow key={m.id} mapping={m} onRemove={() => removeMapping(m)} onPreview={() => setPreviewResourceId(m.resource?.resource_id)} />
+            ))}
+            {visibleMappings.length === 0 && (
+              <p className="lc-muted-note" style={{ margin: 0 }}>
+                {mappings.length === 0 ? 'No resources assigned yet.' : 'No resources match the current search/filter.'}
+              </p>
+            )}
+          </div>
+        </>
+      )}
+
+      {addDrawerCategory !== null && (
+        <AddResourceMapDrawer
+          examId={examId}
+          initialCategory={addDrawerCategory}
+          existingResourceIds={mappings.map((m) => m.resource?.resource_id).filter(Boolean)}
+          onClose={() => setAddDrawerCategory(null)}
+          onAdded={() => { setAddDrawerCategory(null); fetchMappings(examId); }}
+        />
+      )}
+
+      {previewResourceId && (
+        <div className="lc-drawer-backdrop" onClick={() => setPreviewResourceId(null)}>
+          <div className="lc-drawer-panel" style={{ width: '50vw', height: '100vh', maxWidth: 'none', display: 'flex', flexDirection: 'column' }} onClick={(e) => e.stopPropagation()}>
+            <div className="lc-drawer-header">
+              <div><h3>Resource Preview</h3></div>
+              <button className="lc-close-btn" onClick={() => setPreviewResourceId(null)}><X size={20} /></button>
+            </div>
+            <AdminResourcePreview resourceId={previewResourceId} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Preview and Remove stay one-click, always-visible icon buttons rather
+// than tucked behind a "..." menu -- both are used often enough (checking a
+// resource looks right, unlinking a wrong match) that hiding them behind an
+// extra click made the row slower to work with, not cleaner.
+const ResourceMapRow = ({ mapping, onRemove, onPreview }) => {
+  const isBook = mapping.resource?.category && ['Guide', 'Precis'].includes(mapping.resource.category);
+  const Icon = CATEGORY_ICON[mapping.category] || FileText;
+  const color = CATEGORY_COLOR[mapping.category] || DEFAULT_CATEGORY_COLOR;
+  const sourceLabel = SOURCE_LABEL[mapping.source] || null;
+
+  return (
+    <div className="lc-resource-row">
+      <span className="lc-resource-row-icon" style={{ background: color.bg, color: color.fg }}>
+        <Icon size={16} />
+      </span>
+      <span className="lc-resource-row-body">
+        <span className="lc-resource-row-title lc-truncate" title={mapping.resource?.title}>{mapping.resource?.title || 'Untitled resource'}</span>
+        <span className="lc-resource-row-meta">
+          <span className="lc-resource-pill" style={{ background: color.bg, color: color.fg }}>{mapping.category}</span>
+          {sourceLabel && <span>{sourceLabel}</span>}
+          {mapping.resource?.status && mapping.resource.status !== 'Published' && <span>{mapping.resource.status}</span>}
+        </span>
+      </span>
+      <span className="lc-resource-row-actions">
+        {isBook && (
+          <button
+            className="lc-icon-btn"
+            title="Open book in new tab"
+            onClick={() => window.open(`/admin/books/${mapping.resource.category}/${mapping.resource.resource_id}`, '_blank')}
+          >
+            <ExternalLink size={14} />
+          </button>
+        )}
+        <button className="lc-icon-btn" title="Preview" onClick={onPreview}><Eye size={14} /></button>
+        <button className="lc-icon-btn danger" title="Remove" onClick={onRemove}><Trash2 size={14} /></button>
+      </span>
+    </div>
+  );
+};
+
+const AddResourceMapDrawer = ({ examId, initialCategory, existingResourceIds, onClose, onAdded }) => {
+  const [search, setSearch] = useState('');
+  const [category, setCategory] = useState(initialCategory || '');
+  const [level, setLevel] = useState(''); // book's own Level tag (BooksPage.jsx), not the fixed exam's
+  // Separate State and UT filters, always visible (not gated behind
+  // Level) -- same split ExamsPage.jsx's own State/UT filter uses.
+  const [stateFilter, setStateFilter] = useState('');
+  const [utFilter, setUtFilter] = useState('');
+  const stateUt = stateFilter || utFilter;
+  const [regions, setRegions] = useState([]);
+  const [allResources, setAllResources] = useState([]);
+  const [supplementary, setSupplementary] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(new Set());
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('lc_regions').select('id,name,level').order('name');
+      setRegions(data || []);
+    })();
+  }, []);
+
+  // Same books-list call, and the same active/archived split, that Book
+  // Content (BooksPage.jsx) uses -- one source of truth for what counts
+  // as a real Intro/Guide/Precis, so a book showing up (or not) in Book
+  // Content is exactly what shows up (or doesn't) here too. No separate
+  // Intro query, no fallback DB query, no metadata backfill -- all of
+  // that lived here only because this drawer used to build its own list
+  // independently; now it just asks Book Content's own API for its list.
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadAll = async () => {
+      setLoading(true);
+      try {
+        const res = await fetch('/api/admin/save-resource', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-admin-api-secret': ADMIN_SECRET },
+          body: JSON.stringify({ type: 'books-list' }),
+        });
+        const data = await res.json();
+        const books = (data?.ok && Array.isArray(data.books)) ? data.books : [];
+
+        const list = books
+          .filter((b) => b.title && !b.isArchived) // same default view Book Content shows
+          .map((b) => ({
+            resource_id: b.resourceId,
+            title: b.title.trim(),
+            category: b.category,
+            level: b.level || '',
+            state_ut: b.stateUt || '',
+            conducting_body: b.conductingBody || '',
+            exam_name: '',
+            format: 'blocks',
+            status: b.status,
+          }));
+
+        if (!cancelled) {
+          list.sort((a, b) => a.title.localeCompare(b.title));
+          setAllResources(list);
+        }
+      } catch (err) {
+        console.error('Failed to load books-list for Add Resource:', err);
+        if (!cancelled) setAllResources([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    loadAll();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Supplementary live search if query has 3+ characters (finds any niche published items)
+  useEffect(() => {
+    const q = search.trim();
+    if (!q || q.length < 3) {
+      setSupplementary([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        let query = supabase
+          .from('resources')
+          .select('resource_id, title, category, level, state_ut, conducting_body, exam_name, format, status')
+          .eq('status', 'Published')
+          .ilike('title', `%${q}%`)
+          .limit(80);
+        if (category) query = query.eq('category', category);
+        const { data } = await query;
+        // Filter out unwanted mock tests and non-block guides/precis
+        const filtered = (data || []).filter((r) => {
+          const t = (r.title || '').toLowerCase();
+          if (t.includes('mock_test') || t.includes('mock test') || t.endsWith('.docx 2') || t === 'test') return false;
+          if ((r.category === 'Guide' || r.category === 'Precis') && r.format !== 'blocks') return false;
+          return true;
+        });
+        setSupplementary(filtered);
+      } catch (e) {
+        console.warn('Supplementary search error:', e);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [search, category]);
+
+  // Merge & deduplicate results by category + title, filtering by Format and Search
+  const results = useMemo(() => {
+    let pool = allResources;
+
+    if (category) {
+      pool = pool.filter((r) => r.category === category);
+    }
+
+    if (level) {
+      pool = pool.filter((r) => r.level === level);
+    }
+
+    if (stateUt) {
+      pool = pool.filter((r) => r.state_ut === stateUt);
+    }
+
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      pool = pool.filter((r) =>
+        (r.title || '').toLowerCase().includes(q) ||
+        (r.conducting_body || '').toLowerCase().includes(q) ||
+        (r.exam_name || '').toLowerCase().includes(q)
+      );
+    }
+
+    const seen = new Set();
+    const merged = [];
+
+    for (const r of pool) {
+      const isDedupedByTitle = r.category === 'Guide' || r.category === 'Precis';
+      const key = isDedupedByTitle
+        ? `${r.category}::${r.title.trim().toLowerCase()}`
+        : `${r.category}::${r.resource_id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(r);
+      }
+    }
+
+    for (const r of supplementary) {
+      if (category && r.category !== category) continue;
+      const isDedupedByTitle = r.category === 'Guide' || r.category === 'Precis';
+      const key = isDedupedByTitle
+        ? `${r.category}::${r.title.trim().toLowerCase()}`
+        : `${r.category}::${r.resource_id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(r);
+      }
+    }
+
+    return merged.sort((a, b) => a.title.localeCompare(b.title));
+  }, [allResources, supplementary, category, level, stateUt, search]);
+
+  const toggle = (resourceId) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(resourceId)) next.delete(resourceId); else next.add(resourceId);
+    return next;
+  });
+
+  const handleAdd = async () => {
+    const picked = results.filter((r) => selected.has(r.resource_id) && !existingResourceIds.includes(r.resource_id));
+    if (picked.length === 0) { onClose(); return; }
+    setSaving(true);
+    // Same resource under another resource_id (identical file/content) must not be
+    // linked twice: drop any pick that duplicates one already on this exam, or
+    // one earlier in this same selection.
+    const keys = await loadResourceKeys(picked.map((r) => r.resource_id));
+    const toAdd = [];
+    const skipped = [];
+    for (const r of picked) {
+      const dupes = await examsAlreadyHavingResource(r.resource_id, [examId], r.category);
+      const twinInSelection = toAdd.some((a) => a.category === r.category && isSameResource(keys.get(a.resource_id), keys.get(r.resource_id)));
+      if (dupes.size > 0 || twinInSelection) skipped.push(r.title); else toAdd.push(r);
+    }
+    if (skipped.length > 0) alert(`Not added -- this exam already has the same resource: ${skipped.join(', ')}`);
+    if (toAdd.length === 0) { setSaving(false); onClose(); return; }
+    const { error } = await adminFrom('lc_exam_resource_map').insert(toAdd.map((r) => ({
+      exam_id: examId,
+      resource_id: r.resource_id,
+      category: r.category,
+      confidence: 'high',
+      reasoning: 'Manually added by admin',
+      source: 'manual',
+    })));
+    setSaving(false);
+    if (error) { alert('Failed: ' + error.message); return; }
+    onAdded();
+  };
+
+  const handleClearFilters = () => {
+    setSearch('');
+    setCategory('');
+    setLevel('');
+    setStateFilter('');
+    setUtFilter('');
+  };
+
+  return (
+    <div className="lc-drawer-backdrop" onClick={onClose}>
+      <div className="lc-drawer-panel" style={{ width: 'min(580px, 94vw)' }} onClick={(e) => e.stopPropagation()}>
+        <div className="lc-drawer-header">
+          <div>
+            <h3>{initialCategory ? `Assign ${initialCategory}` : 'Add Resource'}</h3>
+            <p>{initialCategory ? `Select a published ${initialCategory} to assign to this exam.` : 'Select canonical books and intros to link to this exam.'}</p>
+          </div>
+          <button className="lc-close-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+        <div className="lc-drawer-body" style={{ gap: '0.85rem' }}>
+          {/* Search input */}
+          <div className="lc-search-input-wrapper">
+            <Search size={16} />
+            <input
+              type="text"
+              placeholder="Search resources by title or keyword..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {search && (
+              <button
+                type="button"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--admin-text-muted)', padding: '0 4px', display: 'flex' }}
+                onClick={() => setSearch('')}
+                title="Clear search"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+
+          {/* Format pills: All, Intro, Guide, Precis */}
+          <div style={{ display: 'flex', gap: '0.4rem', margin: '0.25rem 0' }}>
+            {[
+              { id: '', label: 'All' },
+              { id: 'Intro', label: 'Intro' },
+              { id: 'Guide', label: 'Guide' },
+              { id: 'Precis', label: 'Precis' },
+            ].map(({ id, label }) => (
+              <button
+                key={id || 'all'}
+                type="button"
+                className={`lc-btn ${category === id ? 'primary' : ''}`}
+                style={{ padding: '0.3rem 0.65rem', fontSize: '0.75rem', borderRadius: '2px' }}
+                onClick={() => setCategory(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Book's own Level / State / UT tags */}
+          <div style={{ display: 'flex', gap: '0.4rem', margin: '0.25rem 0', flexWrap: 'wrap' }}>
+            <div style={{ minWidth: 130 }}>
+              <Select
+                value={level}
+                onChange={(e) => { setLevel(e.target.value); setStateFilter(''); setUtFilter(''); }}
+                options={LEVEL_OPTIONS}
+              />
+            </div>
+            <div style={{ minWidth: 150 }}>
+              <Select
+                searchable
+                value={stateFilter}
+                onChange={(e) => { setStateFilter(e.target.value); setUtFilter(''); if (e.target.value) setLevel('state'); }}
+                placeholder="All States"
+                options={[{ value: '', label: 'All States' }, ...regions.filter((r) => r.level === 'state').map((r) => ({ value: r.name, label: r.name }))]}
+              />
+            </div>
+            <div style={{ minWidth: 150 }}>
+              <Select
+                searchable
+                value={utFilter}
+                onChange={(e) => { setUtFilter(e.target.value); setStateFilter(''); if (e.target.value) setLevel('ut'); }}
+                placeholder="All UTs"
+                options={[{ value: '', label: 'All UTs' }, ...regions.filter((r) => r.level === 'ut').map((r) => ({ value: r.name, label: r.name }))]}
+              />
+            </div>
+          </div>
+
+          {/* Active filter badges / reset */}
+          {(search || category || level || stateUt) && (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', fontSize: '0.75rem', color: 'var(--admin-text-muted)', padding: '0.2rem 0' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', alignItems: 'center' }}>
+                <span>Filters:</span>
+                {category && (
+                  <span className="lc-status-badge" style={{ background: 'var(--surface-alt)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                    {category}
+                    <X size={11} style={{ cursor: 'pointer' }} onClick={() => setCategory('')} />
+                  </span>
+                )}
+                {level && (
+                  <span className="lc-status-badge" style={{ background: 'var(--surface-alt)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                    {LEVEL_OPTIONS.find((o) => o.value === level)?.label}
+                    <X size={11} style={{ cursor: 'pointer' }} onClick={() => { setLevel(''); setStateFilter(''); setUtFilter(''); }} />
+                  </span>
+                )}
+                {stateFilter && (
+                  <span className="lc-status-badge" style={{ background: 'var(--surface-alt)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                    {stateFilter}
+                    <X size={11} style={{ cursor: 'pointer' }} onClick={() => setStateFilter('')} />
+                  </span>
+                )}
+                {utFilter && (
+                  <span className="lc-status-badge" style={{ background: 'var(--surface-alt)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                    {utFilter}
+                    <X size={11} style={{ cursor: 'pointer' }} onClick={() => setUtFilter('')} />
+                  </span>
+                )}
+                {search && (
+                  <span className="lc-status-badge" style={{ background: 'var(--surface-alt)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                    "{search}"
+                    <X size={11} style={{ cursor: 'pointer' }} onClick={() => setSearch('')} />
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={handleClearFilters}
+                style={{ background: 'none', border: 'none', color: 'var(--admin-accent)', cursor: 'pointer', fontSize: '0.75rem', textDecoration: 'underline', padding: 0 }}
+              >
+                Reset
+              </button>
+            </div>
+          )}
+
+          {loading ? (
+            <p className="lc-muted-note" style={{ margin: '1rem 0' }}>Loading available study resources…</p>
+          ) : (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.75rem', color: 'var(--admin-text-muted)' }}>
+                <span>{results.length} resource{results.length === 1 ? '' : 's'} available</span>
+                {category && <span>Filtered by: {category}</span>}
+              </div>
+              {results.map((r) => {
+                const already = existingResourceIds.includes(r.resource_id);
+                const rawBody = r.conducting_body ? r.conducting_body.replace(/^\d+\.\s*[^—]+—\s*\d+\.\s*/, '') : '';
+                return (
+                  <label key={r.resource_id} className="lc-drawer-list-item" style={{ cursor: already ? 'default' : 'pointer', opacity: already ? 0.5 : 1 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
+                      <input
+                        type="checkbox"
+                        disabled={already}
+                        checked={already || selected.has(r.resource_id)}
+                        onChange={() => toggle(r.resource_id)}
+                        style={{ marginRight: '0.3rem', flexShrink: 0 }}
+                      />
+                      <span className="lc-truncate" title={r.title}>{r.title}</span>
+                      <span className="lc-muted-note" style={{ flexShrink: 0 }}>· {r.category}</span>
+                      {rawBody && (
+                        <span
+                          className="lc-muted-note lc-truncate"
+                          style={{ maxWidth: '140px', fontSize: '0.72rem', background: 'var(--surface-alt)', padding: '0.1rem 0.4rem', borderRadius: '2px', flexShrink: 0 }}
+                          title={rawBody}
+                        >
+                          {rawBody}
+                        </span>
+                      )}
+                    </span>
+                    {already && <span className="lc-muted-note" style={{ flexShrink: 0, marginLeft: '0.5rem' }}>Already mapped</span>}
+                  </label>
+                );
+              })}
+              {results.length === 0 && <p className="lc-muted-note">No matching published resources found.</p>}
+            </div>
+          )}
+        </div>
+        <div className="lc-modal-footer">
+          <span style={{ marginRight: 'auto', fontSize: '0.8rem', color: 'var(--admin-text-muted)', alignSelf: 'center' }}>
+            {selected.size} resource{selected.size === 1 ? '' : 's'} selected
+          </span>
+          <button className="lc-btn" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="lc-btn primary" onClick={handleAdd} disabled={saving || selected.size === 0}>
+            {saving ? 'Assigning…' : 'Assign'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default ExamResourcesPanel;

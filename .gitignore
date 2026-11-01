@@ -1,0 +1,55 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+__pycache__
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.claude/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.env
+.env.local
+*.docx
+
+# Regenerable QA reports (scripts/scan_content_issues.mjs, etc.)
+content-issues-report.json
+
+# Raw production data dumps taken before destructive DB changes -- not
+# source, shouldn't be in history, kept locally in case a restore is
+# ever needed.
+backups/
+
+# Internal-only reference docs that must never ship in the deployed
+# bundle or land in git history -- moved here from public/ 2026-09-13
+# after finding a live AI API key hardcoded in AI_API_USAGE.md, publicly
+# downloadable at <site>/AI_API_USAGE.md. Key rotation is still pending;
+# this stops the doc from being re-committed in the meantime.
+internal/
+
+# Profiling-engine test personas: derived from real survey responses (anonymised, but
+# still cohort data) -- regenerate with scripts/testdata/build_personas.py, never commit.
+test-data/
+
+# Book cover generation: raw/intermediate outputs and scratch test renders.
+# Only the optimised .webp covers in public/thumbnails/books are shipped.
+raw_book_covers/
+public/thumbnails/books/*.png
+/test_*.png
+/test_*.webp

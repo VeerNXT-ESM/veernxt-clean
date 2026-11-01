@@ -1,0 +1,44 @@
+// Data-driven sidebar nav for the admin CMS shell (AdminShell.jsx). Only
+// groups/items backed by a real, working page are listed here — per
+// CMS_Rehaul.md §2's structure, trimmed to what actually exists today.
+// Icon names are resolved to lucide-react components in AdminShell.jsx.
+export const ADMIN_NAV = [
+  {
+    group: 'LEARNING',
+    items: [
+      { key: 'exams', label: 'Exams', path: '/admin/exams', icon: 'GraduationCap' },
+      { key: 'books', label: 'Book Content', path: '/admin/books', icon: 'BookMarked' },
+      { key: 'book-covers', label: 'Book Covers', path: '/admin/book-covers', icon: 'BookOpen' },
+      { key: 'reader-themes', label: 'Reader Themes', path: '/admin/reader-themes', icon: 'Palette' },
+      { key: 'conducting-bodies', label: 'Conducting Bodies', path: '/admin/conducting-bodies', icon: 'Landmark' },
+      { key: 'categories', label: 'Categories', path: '/admin/categories', icon: 'Tags' },
+      { key: 'subjects', label: 'Subjects', path: '/admin/subjects', icon: 'BookOpen' },
+      { key: 'publish-content', label: 'Publish Content', path: '/admin/publish-content', icon: 'FileUp' },
+    ],
+  },
+  {
+    group: 'SITE',
+    items: [
+      { key: 'banners', label: 'Banners', path: '/admin/banners', icon: 'Images' },
+    ],
+  },
+  {
+    group: 'SYSTEM',
+    items: [
+      { key: 'users', label: 'Users', path: '/admin/users', icon: 'Users' },
+      { key: 'roles', label: 'Roles & Permissions', path: '/admin/roles', icon: 'Shield' },
+      { key: 'profile', label: 'Admin Profile', path: '/admin/profile', icon: 'UserCheck' },
+      { key: 'quizzes', label: 'Quizzes', path: '/admin/quizzes', icon: 'HelpCircle' },
+      { key: 'pyq-papers', label: 'PYQ Papers', path: '/admin/pyq-papers', icon: 'ScrollText' },
+    ],
+  },
+  {
+    group: 'OPERATIONS',
+    items: [
+      { key: 'jobs', label: 'Job Board', path: '/admin/jobs', icon: 'Briefcase' },
+      { key: 'rewards', label: 'Rewards', path: '/admin/rewards', icon: 'Gift' },
+      { key: 'private-sector', label: 'Private Sector', path: '/admin/private-sector', icon: 'UserCheck' },
+      { key: 'legal-aid', label: 'Legal Aid', path: '/admin/legal-aid', icon: 'Scale' },
+    ],
+  },
+];
