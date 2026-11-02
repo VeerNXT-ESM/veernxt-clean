@@ -34,6 +34,19 @@ The previous repository (`VeerNXT-ESM/veernxt-web`) and some local archives stil
 
 `scraper/` writes to `jobs_v2` with the Supabase **service-role key** (bypasses RLS) and calls an AI provider with its own key. Both come from a local `.env` that is never committed. The scraper as received carried a hard-coded fallback token for a private AI service and a live `.env`; both were removed from this copy, but the old scraper repository's history and the sender's machine still hold them. Treat the AI service token, the OpenRouter key and the Supabase service-role key used by the scraper as compromised and rotate them with the rest (section 6).
 
-## 8. Row-level security
+## 8. Admin accounts
+
+Admin login (`api/_lib/adminAuth.js`) is Supabase Auth email plus password. A user is an admin if their `user_metadata.role` is one of `Super Admin`, `Admin`, `Content Curator`, `Employer Partner`, `Employer`. No mailbox is needed to log in: accounts are created with the email pre-confirmed, and the invite endpoint (`api/admin/misc.js`, `handleAdminInvite`) returns a temporary password in the response instead of emailing it. The email address is only a username.
+
+State on 2026-11-02 (counts only, no addresses): 52 Supabase users in total; **5 can enter `/admin`** (1 Super Admin, 4 Admin), all on `@veernxt.in` addresses. Two of the five (including the Super Admin) still have the first-login / must-change-password flag set, so they may never have changed the initial password.
+
+Problems to fix:
+- **Default passwords are special-cased.** The login and change-password code treats `123456789` and the typo variant `1234556789` as interchangeable and retries the other one. Remove this, and check no account still uses either.
+- **`Employer` and `Employer Partner` are allowed into admin login.** Check that the admin UI really limits what they can do; the `employer` role currently used by employer accounts is lower-case and does not match, but a capitalised role would.
+- **Outgoing staff still have admin access.** Remove or disable their accounts (set no `role`, or ban the user in the Supabase dashboard) once the new team has its own.
+- **Bootstrapping:** the invite screen needs an existing admin, so keep one Super Admin, reset its password at once, create named accounts, then retire the shared one. Do not pass admin passwords in chat or email.
+- **Zoho or other mailboxes:** the repository has no reference to Zoho. The `@veernxt.in` mailboxes (for example the support address shown on the site) are a domain and email-hosting ownership item, separate from admin logins: transfer the hosting account and keep the domain's MX records. Outgoing application email uses Gmail SMTP (`SMTP_USER`, `SMTP_PASS`), not the domain mailboxes.
+
+## 9. Row-level security
 
 Test RLS with the anon key, not only the service-role key. The database has 47 tables and views; check each user-facing table has an RLS policy before relying on it.

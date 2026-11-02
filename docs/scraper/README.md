@@ -45,6 +45,18 @@ The window has buttons for each step above. Logs appear in the window.
 - **Keep keys out of the folder you share.** `.env` is ignored by git; keep it that way.
 - **History.** An earlier, modular version of the scraper (11 separate source scrapers, a cron purge, a matching hook) was left out of this repository. Its source folders can be recovered from the handover archive if needed.
 
+## Recommended next step: move it into the backend
+
+The Electron app is a stop-gap. It keeps the database and AI keys on a desktop, needs a person to run it, and nothing sweeps old jobs. Better:
+
+1. **Fetch-based scraper, no browser.** A job page fetched with plain HTTP already contains the last date, vacancies, age limit and qualification (checked 2026-11-02 on one Sarkari Job Portal page; check the listing pages and the other source too).
+2. **Run it on a schedule** (GitHub Actions cron or a Supabase scheduled function), daily. A single Vercel function will not do: the Hobby limit is 60 seconds per call and one run takes longer. If an admin button is wanted instead, use one small call per job through the existing admin router (see `docs/VERCEL_FUNCTIONS.md`).
+3. **Write new jobs as "pending"** and add Approve / Reject to Admin > Job Board, so a person still reviews what goes live.
+4. **Sweep expired jobs** in the same run (set `is_expired`, and make the Jobs page hide them).
+5. **Prerequisite:** fix admin authentication first (`docs/SECURITY_NOTES.md`, item 1). The admin secret is public today, so anyone could trigger admin endpoints.
+
+Also test, before relying on a hosted runner, that the two sites do not block its IP address. Rough size: 2 to 4 days including the database change.
+
 ## Other notes in this folder
 
 `scraper_schema_guide.md` and `Scrape possibilities.md` are notes from the original scraper (June 2026). They explain the job fields and the sites that could be scraped, but may not match the current code.

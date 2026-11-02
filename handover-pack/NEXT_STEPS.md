@@ -17,7 +17,11 @@
 1. **Rotate the old keys** (Supabase service role and access token, Razorpay secret, R2 secret, MSG91, admin secret; revoke the unused OpenAI, GCP and AI-proxy keys; also the job scraper's Supabase key, AI service token and OpenRouter key, which the scraper's sender still holds). Then make the old repo private or archive it.
 2. **Fix the public admin secret.** `VITE_ADMIN_API_SECRET` is compiled into the public JavaScript bundle (confirmed 2026-11-01). Move admin calls to the admin's Supabase session, then rotate `ADMIN_API_SECRET`. Full list: `docs/SECURITY_NOTES.md`.
 3. Check Vercel env vars: `DEVTEST` must be unset; `MSG91_AUTH_KEY` and `MSG91_TEMPLATE_ID` must be set (otherwise OTP runs in simulation mode with code 123456).
-4. Remove or guard the public dev routes (`/dev-reader`, `/profiling-tester`, `/admin/profiling-tester`, `/dev-quiz-preview`, `/demo-cards`).
+4. **Admin accounts:** keep one Super Admin as a bootstrap, reset its password at once, create named admins, then remove or disable the outgoing team's four accounts. Remove the `123456789` default-password handling in `api/_lib/adminAuth.js`. Details: `docs/SECURITY_NOTES.md` section 8. The Zoho/domain mailboxes are an account-ownership item, not needed for admin login.
+5. Remove or guard the public dev routes (`/dev-reader`, `/profiling-tester`, `/admin/profiling-tester`, `/dev-quiz-preview`, `/demo-cards`).
+
+## Recommended project for the new team
+- Move the scraper into the backend as a scheduled job with an approve step, and sweep expired jobs. Plan: `docs/scraper/README.md`. Do the admin-auth fix first.
 
 ## Still open on our side
 - **Flow test with the real account** (status report section 6; adjust for `/home`). Not run yet. Light and dark landing page, Admin > Banners tabs, slim header on every page and the Messages page height have been build-checked only.
