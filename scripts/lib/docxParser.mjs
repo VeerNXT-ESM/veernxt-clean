@@ -49,7 +49,7 @@ export function serializeInner(el) {
 }
 
 function classifyParagraph(element) {
-  const text = element.textContent.replace(/ /g, ' ').trim();
+  const text = element.textContent.replace(/\u00a0/g, ' ').trim();
   if (!text) return null;
 
   const firstChild = element.firstChild;

@@ -302,11 +302,12 @@ const AdminLegalAid = () => {
     },
   };
 
-  /* ─── Tab button helper ─── */
-  const TabBtn = ({ id, icon: Icon, label, sub }) => {
+  /* ─── Tab button helper (a render function, not a component, so it keeps no state of its own) ─── */
+  const renderTabBtn = ({ id, icon: Icon, label, sub }) => {
     const active = emailTab === id;
     return (
       <button
+        key={id}
         onClick={() => { setEmailTab(id); setSendResult(null); }}
         style={{
           flex: 1, padding: '10px 8px', border: 'none', cursor: 'pointer',
@@ -537,8 +538,8 @@ const AdminLegalAid = () => {
                 <div style={{ padding: '10px 12px', background: T.surfaceAlt, borderBottom: `1px solid ${T.border}` }}>
                   <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em', color: T.muted, marginBottom: 8 }}>Compose Email</div>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    <TabBtn id="veteran"  icon={Mail}      label="Reply to Veteran"  sub="Acknowledgement & next steps" />
-                    <TabBtn id="advocate" icon={UserCheck} label="Forward to Advocate" sub="Case brief for legal counsel"  />
+                    {renderTabBtn({ id: 'veteran', icon: Mail, label: 'Reply to Veteran', sub: 'Acknowledgement & next steps' })}
+                    {renderTabBtn({ id: 'advocate', icon: UserCheck, label: 'Forward to Advocate', sub: 'Case brief for legal counsel' })}
                   </div>
                 </div>
 

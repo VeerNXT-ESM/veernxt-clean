@@ -38,10 +38,10 @@ function matchJobsV2ForExam(allJobs, exam) {
   const careerTrack = (exam.career_track || '').toUpperCase();
 
   const bodyWords = conductingBody
-    .split(/[\s,./()\-]+/)
+    .split(/[\s,./()-]+/)
     .filter(w => w.length > 2 && !['the', 'and', 'for', 'board', 'commission', 'govt', 'india', 'state', 'department', 'recruitment'].includes(w));
   const examWords = examName
-    .split(/[\s,./()\-]+/)
+    .split(/[\s,./()-]+/)
     .filter(w => w.length > 2 && !['recruitment', 'exam', 'examination', 'level', 'post', 'posts', 'online', 'form', 'various'].includes(w));
 
   return allJobs

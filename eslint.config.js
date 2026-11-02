@@ -22,6 +22,15 @@ export default defineConfig([
       'react-hooks/set-state-in-effect': 'off',
       'react-hooks/immutability': 'off',
       'react-hooks/rules-of-hooks': 'error',
+      // Advisory rules from the React Compiler lint set. The project does not use the React
+      // Compiler, and the flagged code is benign (Date.now / Math.random inside click handlers,
+      // the lazy-init ref pattern, manual useMemo). Kept as warnings so they stay visible.
+      'react-hooks/purity': 'warn',
+      'react-hooks/refs': 'warn',
+      'react-hooks/preserve-manual-memoization': 'warn',
+      'react-hooks/static-components': 'warn',
+      // Dev-only (fast refresh): files that export both components and helpers.
+      'react-refresh/only-export-components': 'warn',
     },
   },
   {

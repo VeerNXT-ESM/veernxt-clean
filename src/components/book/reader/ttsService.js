@@ -48,10 +48,10 @@ export function cleanTextForSpeech(raw) {
     .replace(/\bvs\.?\s*/gi, ' versus ')
     .replace(/\bw\.r\.t\.?\s*/gi, 'with respect to ')
     // Questions, Answers, Solutions
-    .replace(/\bQ(\d+)[\.:]\s*/gi, 'Question $1. ')
-    .replace(/\bAns[\.:]\s*/gi, 'Answer: ')
-    .replace(/\bSol[\.:]\s*/gi, 'Solution: ')
-    .replace(/\bEx[\.:]\s*/gi, 'Example: ')
+    .replace(/\bQ(\d+)[.:]\s*/gi, 'Question $1. ')
+    .replace(/\bAns[.:]\s*/gi, 'Answer: ')
+    .replace(/\bSol[.:]\s*/gi, 'Solution: ')
+    .replace(/\bEx[.:]\s*/gi, 'Example: ')
     // Options A, B, C, D in questions
     .replace(/(?:^|\n|\s)\(([A-D])\)\s+/g, ' Option $1: ')
     .replace(/(?:^|\n|\s)([A-D])\.\s+/g, ' Option $1: ')

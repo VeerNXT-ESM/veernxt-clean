@@ -36,7 +36,7 @@ export function cleanParagraphContent(content) {
     }
 
     // Question number: Q1., Q2., Q4., Q5., etc.
-    const qMatch = line.match(/^(Q\d+)[\.:]?(.*)$/i);
+    const qMatch = line.match(/^(Q\d+)[.:]?(.*)$/i);
     if (qMatch) {
       const qNum = qMatch[1];
       const rest = qMatch[2] ? qMatch[2].trim() : '';
@@ -77,7 +77,7 @@ export function cleanParagraphContent(content) {
     }
 
     // Multiple choice options: A., B., C., D. (with or without space, e.g. A.Only I follows)
-    const optMatch = line.match(/^([A-D])[\.\)]\s*(.*)$/i);
+    const optMatch = line.match(/^([A-D])[.)]\s*(.*)$/i);
     if (optMatch) {
       out.push(
         `<div class="bk-option-line"><span class="bk-opt-badge">${optMatch[1]}</span><span class="bk-opt-text">${optMatch[2].trim()}</span></div>`
@@ -86,7 +86,7 @@ export function cleanParagraphContent(content) {
     }
 
     // Numbered statement (1) All A are B, 2) Some A are B...
-    const numMatch = line.match(/^(\d+)[\.\)]\s*(.*)$/);
+    const numMatch = line.match(/^(\d+)[.)]\s*(.*)$/);
     if (numMatch) {
       out.push(
         `<div class="bk-num-stmt"><span class="bk-num-tag">${numMatch[1]}.</span><span class="bk-stmt-body">${numMatch[2]}</span></div>`

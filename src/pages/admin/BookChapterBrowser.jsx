@@ -33,7 +33,7 @@ async function fetchContentJson(url, fallbackBody) {
   try {
     const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store' });
     if (res.ok) return await res.json();
-  } catch {}
+  } catch { /* ignore */ }
   const data = await postBooksAction({ type: 'books-fetch-content', url, ...fallbackBody });
   return data.data;
 }
@@ -694,7 +694,7 @@ const BookChapterBrowser = () => {
                   resourceId: book.resourceId,
                 });
                 if (meta) setMetadata(meta);
-              } catch {}
+              } catch { /* ignore */ }
             }
 
             if (activeChapterMeta) {
@@ -712,7 +712,7 @@ const BookChapterBrowser = () => {
                     setDirty(false);
                   }
                 }
-              } catch {}
+              } catch { /* ignore */ }
             }
           }}
         />

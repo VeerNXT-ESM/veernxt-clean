@@ -400,7 +400,7 @@ const MessagingWorkspace = ({ initialRecipient = null, showInvites = false }) =>
     let domain = 'link';
     try {
       domain = new URL(url).hostname;
-    } catch (e) {}
+    } catch (e) { /* ignore */ }
 
     return (
       <a href={url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none', display: 'block', marginTop: '0.5rem' }}>

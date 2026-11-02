@@ -125,7 +125,7 @@ const BooksPage = () => {
       if (saved) {
         return { ...DEFAULT_VISIBLE_COLUMNS, ...JSON.parse(saved) };
       }
-    } catch (e) {}
+    } catch (e) { /* ignore */ }
     return DEFAULT_VISIBLE_COLUMNS;
   });
   const [showColPicker, setShowColPicker] = useState(false);
@@ -148,7 +148,7 @@ const BooksPage = () => {
       const next = { ...prev, [colKey]: !prev[colKey] };
       try {
         localStorage.setItem('admin_books_visible_cols', JSON.stringify(next));
-      } catch (e) {}
+      } catch (e) { /* ignore */ }
       return next;
     });
   };
@@ -157,7 +157,7 @@ const BooksPage = () => {
     setVisibleColumns(DEFAULT_VISIBLE_COLUMNS);
     try {
       localStorage.setItem('admin_books_visible_cols', JSON.stringify(DEFAULT_VISIBLE_COLUMNS));
-    } catch (e) {}
+    } catch (e) { /* ignore */ }
   };
 
   const showAllColumns = () => {
@@ -172,7 +172,7 @@ const BooksPage = () => {
     setVisibleColumns(all);
     try {
       localStorage.setItem('admin_books_visible_cols', JSON.stringify(all));
-    } catch (e) {}
+    } catch (e) { /* ignore */ }
   };
 
   // Every inline-editable tag (Category, Level, State/UT, Conducting Body)

@@ -145,12 +145,12 @@ function matchJobsForExam(allJobs, selectedExam) {
     'combined', 'all', 'india'
   ]);
   const examTokens = examName
-    .split(/[\s,./()\-]+/)
+    .split(/[\s,./()-]+/)
     .filter(w => w.length >= 2 && !stopWords.has(w));
 
   const conductingTokens = [conductingName, conductingShort]
     .join(' ')
-    .split(/[\s,./()\-]+/)
+    .split(/[\s,./()-]+/)
     .filter(w => w.length >= 2 && !['board', 'commission', 'govt', 'india', 'state', 'department', 'recruitment', 'and', 'for', 'the'].includes(w));
 
   const scored = allJobs.map(job => {
@@ -328,7 +328,7 @@ function getExamRichCardData(exam, categoryName, division) {
   const regionLevel = exam.region?.name || exam.region?.level || exam.level || (division === 'central' ? 'Central' : 'State');
 
   // 1. Short Display Title matching reference design
-  let displayTitle = rawName;
+  let displayTitle;
   if (nameLower.startsWith('ssc cgl')) displayTitle = 'SSC CGL';
   else if (nameLower.startsWith('ssc chsl')) displayTitle = 'SSC CHSL';
   else if (nameLower.startsWith('ssc mts')) displayTitle = 'SSC MTS & Havaldar';
@@ -353,7 +353,7 @@ function getExamRichCardData(exam, categoryName, division) {
   }
 
   // 2. Comprehensive Description matching reference design
-  let description = '';
+  let description;
   if (nameLower.includes('cgl')) {
     description = 'Combined Graduate Level Examination for various Group B & C posts.';
   } else if (nameLower.includes('chsl')) {
@@ -399,8 +399,8 @@ function getExamRichCardData(exam, categoryName, division) {
   }
 
   // 3. Icon and Color Theme
-  let theme = 'green';
-  let iconName = 'file';
+  let theme;
+  let iconName;
   if (nameLower.includes('chsl') || nameLower.includes('clerk') || nameLower.includes('computer')) {
     theme = 'orange';
     iconName = 'monitor';
@@ -427,9 +427,9 @@ function getExamRichCardData(exam, categoryName, division) {
   }
 
   // 4. Qualification Pill
-  let qualText = 'Graduate Level';
-  let qualTheme = 'qual-green';
-  let qualIcon = 'grad';
+  let qualText;
+  let qualTheme;
+  let qualIcon;
   if (nameLower.includes('10+2') || nameLower.includes('chsl') || nameLower.includes('clerk') || nameLower.includes('intermediate') || nameLower.includes('stenographer')) {
     qualText = '10+2 Level';
     qualTheme = 'qual-orange';
@@ -457,7 +457,7 @@ function getExamRichCardData(exam, categoryName, division) {
   }
 
   // 5. Region / Level Pill
-  let levelText = 'Central';
+  let levelText;
   if (typeof regionLevel === 'string' && regionLevel.toLowerCase().includes('central')) {
     levelText = 'Central';
   } else if (division === 'central') {
@@ -469,7 +469,7 @@ function getExamRichCardData(exam, categoryName, division) {
   }
 
   // 6. Role / Posts Info (Footer Left)
-  let postText = 'Various Posts';
+  let postText;
   if (nameLower.includes('cgl')) postText = 'Various Posts';
   else if (nameLower.includes('chsl')) postText = 'LDC, JSA, DEO';
   else if (nameLower.includes('mts')) postText = 'MTS, Havaldar';

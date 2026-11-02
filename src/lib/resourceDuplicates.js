@@ -159,6 +159,8 @@ export async function syncBookPairLinks(guideBook, precisBook) {
 
   const adminSecret = typeof window !== 'undefined'
     ? import.meta.env?.VITE_ADMIN_API_SECRET
+    // Node scripts have no import.meta.env; there `process` exists.
+    // eslint-disable-next-line no-undef
     : process.env?.ADMIN_API_SECRET;
 
   if (adminSecret) {

@@ -67,7 +67,7 @@ export async function parseDocxToSemanticModel(arrayBuffer, fileName) {
   // Helper to classify paragraphs
   const classifyParagraph = (element) => {
     // Remove non-breaking spaces as well to catch "empty" paragraphs
-    const text = element.textContent.replace(/ /g, ' ').trim();
+    const text = element.textContent.replace(/\u00a0/g, ' ').trim();
     if (!text) return null;
 
     // Check for bold prefixes (e.g. "IMPORTANT:", "NOTE:")

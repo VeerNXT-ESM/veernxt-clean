@@ -93,7 +93,7 @@ async function handleVerify(req, res) {
 
   const fullMobile = normalizeMobile(mobile);
 
-  let otpVerified = false;
+  let otpVerified;
   try {
     const [payloadB64, signature] = otpToken.split('.');
     if (!payloadB64 || !signature) {
