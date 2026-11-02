@@ -3,15 +3,15 @@
 **Updated:** 2026-11-01. Background and ground rules: `STATUS_REPORT_2026-10-28.md` (its section 3 and 4 are older than this file; where they differ, this file wins).
 
 ## State
-- Repo: `github.com/VeerNXT-ESM/veernxt-clean`, branch `main`. Clean tree, no old history. **Vercel is NOT yet switched to this repo** (it still builds the old one); switch it after the morning check below.
+- Repo: `github.com/VeerNXT-ESM/veernxt-clean`, branch `main`. Clean tree, no old history. **Hosting is the new team's call.** Vercel is not switched to this repo by us: they connect it themselves (or host elsewhere). The site was click-checked on the clean branch on 2026-11-02 and worked.
 - `sql/site_banners_video.sql` has been run.
 - In the repo: `README.md`, `.env.example`, `docs/` (master reference, front-end map, security notes, eight interactive diagrams), `graphify-out/` (structural graph of the code), and this `handover-pack/`.
 - Unused images and the removed hero video (about 150 MB in total) are in `VeerNXT Handover\IMAGE_REPOSITORY` for the new team's drive.
 
-## Before switching Vercel (morning check, 2026-11-02)
+## Before go-live (new team, whichever host)
 1. Run `npm install && npm run dev` from a fresh clone of `veernxt-clean` and click through: landing (light and dark, language switch, videos), login, `/home`, Learning Center, an exam, a book chapter, Jobs (all tabs incl. Private Sector), Finance, Legal, Network, Subscribe (no payment), Admin > Banners tabs. Watch the console and network tab.
 2. Run the profiling flow end to end; check `/api/profile/recommend` returns 200.
-3. In Vercel: connect `VeerNXT-ESM/veernxt-clean`, set the Production Branch to `main`, confirm env vars are present, check the first deploy and the live site, and keep the old repo connected as the fallback until it is verified.
+3. In Vercel: connect `VeerNXT-ESM/veernxt-clean`, set the Production Branch to `main`, enter the env vars (names in `.env.example`, values from the password manager), check the first deploy, and keep the old project running until it is verified. **Rotate keys only after the new deploy works, and update Vercel's env vars in the same step**, or the live site loses its keys. Hosting elsewhere: the `api/*.js` files are Vercel-style handlers and `vercel.json` holds the rewrites, so they need adapting.
 
 ## Do first (new team)
 1. **Rotate the old keys** (Supabase service role and access token, Razorpay secret, R2 secret, MSG91, admin secret; revoke the unused OpenAI, GCP and AI-proxy keys). Then make the old repo private or archive it.
