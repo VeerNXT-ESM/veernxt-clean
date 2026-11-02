@@ -1,0 +1,1503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VeerNXT Job Scraper & AI Sync Engine</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0b0d13;
+      color: #e2e8f0;
+      padding: 1.25rem 1.5rem;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid #1e2230;
+    }
+
+    .brand-title {
+      font-size: 1.5rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #4ade80 0%, #22d3ee 50%, #818cf8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.5px;
+    }
+
+    .subtitle {
+      font-size: 0.78rem;
+      color: #64748b;
+      margin-top: 2px;
+    }
+
+    .header-actions {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 1.25rem;
+      height: calc(100vh - 5.5rem);
+    }
+
+    .main-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      overflow-y: auto;
+      padding-right: 0.25rem;
+    }
+
+    .card {
+      background: #141721;
+      border: 1px solid #222634;
+      border-radius: 12px;
+      padding: 1.25rem;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+    }
+
+    .card h3 {
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.75px;
+      margin-bottom: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .card p { font-size: 0.82rem; color: #64748b; margin-bottom: 0.75rem; }
+
+    .input-group { display: flex; gap: 0.75rem; margin-bottom: 0.75rem; }
+
+    input[type="text"], input[type="number"] {
+      background: #0b0d13;
+      border: 1px solid #272c3d;
+      color: #e2e8f0;
+      padding: 0.6rem 0.85rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-family: 'Inter', sans-serif;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    input[type="text"]:focus, input[type="number"]:focus {
+      border-color: #4ade80;
+      box-shadow: 0 0 0 2px rgba(74,222,128,0.15);
+    }
+
+    input[type="text"] { flex: 1; }
+    input[type="number"] { width: 85px; text-align: center; }
+
+    .config-row {
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 0.75rem;
+    }
+
+    .config-item {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .config-item label {
+      font-size: 0.75rem;
+      color: #94a3b8;
+      font-weight: 600;
+    }
+
+    /* Modern Buttons */
+    button {
+      background: linear-gradient(135deg, #4ade80, #22d3ee);
+      color: #0b0d13;
+      border: none;
+      padding: 0.6rem 1.25rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      cursor: pointer;
+      font-family: 'Inter', sans-serif;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 15px rgba(74,222,128,0.35);
+    }
+    button:active { transform: translateY(0); }
+    button:disabled {
+      background: #222634;
+      color: #64748b;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .btn-secondary {
+      background: #1e2230;
+      color: #cbd5e1;
+      border: 1px solid #2d3345;
+    }
+    .btn-secondary:hover {
+      background: #272d40;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    }
+
+    .btn-upload-primary {
+      background: linear-gradient(135deg, #10b981, #06b6d4);
+      color: #091217;
+      font-size: 0.88rem;
+      padding: 0.65rem 1.4rem;
+      box-shadow: 0 4px 18px rgba(16,185,129,0.3);
+    }
+    .btn-upload-primary:hover {
+      box-shadow: 0 6px 22px rgba(16,185,129,0.45);
+    }
+
+    .btn-danger {
+      background: #ef4444;
+      color: white;
+    }
+    .btn-danger:hover {
+      background: #dc2626;
+      box-shadow: 0 4px 15px rgba(239,68,68,0.35);
+    }
+
+    .btn-sm {
+      padding: 0.35rem 0.75rem;
+      font-size: 0.72rem;
+      border-radius: 6px;
+    }
+
+    /* Live Log Panel */
+    .log-panel {
+      background: #0d0f17;
+      border: 1px solid #1e2230;
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+
+    .log-header {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid #1e2230;
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.75px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      background: #111420;
+    }
+
+    .log-header-left {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .log-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #4ade80;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    .log-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.85rem;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 0.72rem;
+      line-height: 1.65;
+    }
+
+    .log-line { padding: 2px 0; word-break: break-word; }
+    .log-line.info { color: #94a3b8; }
+    .log-line.success { color: #4ade80; }
+    .log-line.warn { color: #fbbf24; }
+    .log-line.error { color: #f87171; }
+    .log-line.ai { color: #c084fc; font-weight: 500; }
+    .log-line.discard { color: #fb923c; }
+
+    /* Results Header Bar */
+    .results-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-bottom: 0.85rem;
+      padding: 0.75rem 1rem;
+      background: #141721;
+      border: 1px solid #222634;
+      border-radius: 10px;
+    }
+
+    .filter-tabs {
+      display: flex;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+    }
+
+    .tab-pill {
+      background: #0b0d13;
+      border: 1px solid #222634;
+      color: #94a3b8;
+      padding: 0.35rem 0.75rem;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .tab-pill:hover { border-color: #3b435b; color: #e2e8f0; }
+    .tab-pill.active {
+      background: #1e2538;
+      border-color: #4ade80;
+      color: #4ade80;
+    }
+
+    .search-input-wrap {
+      position: relative;
+      min-width: 220px;
+    }
+
+    .search-input-wrap input {
+      width: 100%;
+      padding: 0.4rem 0.75rem;
+      font-size: 0.78rem;
+    }
+
+    /* Stats Overview Banner */
+    .stats-banner {
+      background: linear-gradient(135deg, #161b28 0%, #0e121d 100%);
+      border: 1px solid #222634;
+      padding: 1rem;
+      border-radius: 10px;
+      margin-bottom: 1rem;
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 0.75rem;
+      text-align: center;
+    }
+
+    .stat-box {
+      padding: 0.5rem;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.02);
+    }
+    .stat-num { font-size: 1.6rem; font-weight: 800; line-height: 1.1; }
+    .stat-label { font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.75px; color: #64748b; margin-top: 4px; }
+
+    /* Job Card Styling */
+    .job-card {
+      background: #141721;
+      border: 1px solid #222634;
+      padding: 1.1rem;
+      margin-bottom: 0.85rem;
+      border-radius: 12px;
+      transition: border-color 0.2s, transform 0.2s;
+      position: relative;
+    }
+
+    .job-card:hover {
+      border-color: #384259;
+      transform: translateY(-1px);
+    }
+
+    .job-card.status-NEW { border-left: 4px solid #10b981; }
+    .job-card.status-UPDATE_AVAILABLE { border-left: 4px solid #f59e0b; }
+    .job-card.status-EXPIRED { border-left: 4px solid #ef4444; opacity: 0.88; }
+    .job-card.status-UP_TO_DATE { border-left: 4px solid #64748b; }
+
+    .job-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 0.5rem;
+      gap: 0.75rem;
+    }
+
+    .job-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      flex: 1;
+      line-height: 1.35;
+    }
+
+    .badge-group {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+    }
+
+    /* Status Badges */
+    .status-badge {
+      padding: 0.22rem 0.65rem;
+      border-radius: 20px;
+      font-size: 0.65rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+
+    .status-badge.NEW {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .status-badge.UPDATE_AVAILABLE {
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .status-badge.EXPIRED {
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .status-badge.UP_TO_DATE {
+      background: rgba(100, 116, 139, 0.15);
+      color: #94a3b8;
+      border: 1px solid rgba(100, 116, 139, 0.3);
+    }
+
+    .sector-badge {
+      background: #1e2538;
+      color: #93c5fd;
+      border: 1px solid #2b354f;
+      padding: 0.2rem 0.6rem;
+      border-radius: 20px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+
+    .job-meta {
+      font-size: 0.74rem;
+      color: #64748b;
+      margin-bottom: 0.65rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    /* Tag Chips Container */
+    .tags-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      margin: 0.5rem 0 0.75rem 0;
+    }
+
+    .tag-chip {
+      background: #111420;
+      color: #38bdf8;
+      border: 1px solid #1f273d;
+      padding: 0.2rem 0.55rem;
+      border-radius: 6px;
+      font-size: 0.68rem;
+      font-weight: 600;
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: -0.2px;
+      display: inline-flex;
+      align-items: center;
+      transition: all 0.15s;
+    }
+
+    .tag-chip:hover {
+      border-color: #38bdf8;
+      background: rgba(56, 189, 248, 0.08);
+    }
+
+    .tag-chip.tag-peon { color: #f472b6; border-color: rgba(244,114,182,0.25); }
+    .tag-chip.tag-banking { color: #fbbf24; border-color: rgba(251,191,36,0.25); }
+    .tag-chip.tag-gov { color: #4ade80; border-color: rgba(74,222,128,0.25); }
+    .tag-chip.tag-railway { color: #a78bfa; border-color: rgba(167,139,250,0.25); }
+
+    /* Diff Alert Box */
+    .diff-box {
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px dashed rgba(245, 158, 11, 0.35);
+      border-radius: 8px;
+      padding: 0.55rem 0.75rem;
+      margin-bottom: 0.75rem;
+      font-size: 0.75rem;
+    }
+
+    .diff-header {
+      font-weight: 700;
+      color: #fbbf24;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .diff-list {
+      list-style: none;
+      padding-left: 0.5rem;
+      color: #fde68a;
+    }
+
+    .diff-list li {
+      padding: 2px 0;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    /* Details Grid */
+    .job-details {
+      background: #0d0f17;
+      padding: 0.75rem;
+      border-radius: 8px;
+      font-size: 0.78rem;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.4rem 1.25rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .detail-row { display: flex; justify-content: space-between; }
+    .detail-label { color: #64748b; }
+    .detail-value { color: #e2e8f0; font-weight: 600; }
+
+    /* Card Action Footer */
+    .card-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 0.5rem;
+      border-top: 1px solid #1c202d;
+    }
+
+    .card-actions-left {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    .link-btn {
+      color: #38bdf8;
+      text-decoration: none;
+      font-size: 0.76rem;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+    .link-btn:hover { text-decoration: underline; color: #7dd3fc; }
+
+    /* Modal Styling */
+    .modal-backdrop {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.75);
+      backdrop-filter: blur(4px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+
+    .modal-backdrop.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .modal-panel {
+      background: #141722;
+      border: 1px solid #2d3345;
+      border-radius: 14px;
+      width: 480px;
+      max-width: 90vw;
+      padding: 1.5rem;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+
+    .modal-header h3 {
+      font-size: 1.1rem;
+      font-weight: 800;
+      color: #f1f5f9;
+    }
+
+    .modal-body {
+      font-size: 0.85rem;
+      color: #94a3b8;
+      line-height: 1.6;
+      margin-bottom: 1.25rem;
+    }
+
+    .modal-options {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      margin: 1rem 0;
+      background: #0b0d13;
+      padding: 1rem;
+      border-radius: 8px;
+      border: 1px solid #1e2230;
+    }
+
+    .modal-option-item {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-size: 0.82rem;
+      color: #cbd5e1;
+      cursor: pointer;
+    }
+
+    .modal-option-item input[type="checkbox"] {
+      accent-color: #4ade80;
+      width: 16px;
+      height: 16px;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+    }
+
+    /* Notification Toast */
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #141722;
+      border: 1px solid #4ade80;
+      color: #f1f5f9;
+      padding: 0.75rem 1.25rem;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      box-shadow: 0 6px 25px rgba(0,0,0,0.5);
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      transform: translateY(100px);
+      opacity: 0;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      z-index: 1000;
+    }
+
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    /* Spinner */
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(74,222,128,0.3);
+      border-top-color: #4ade80;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #222634; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #2f3549; }
+
+    /* ── Legacy Enrichment Panel ─────────────────────── */
+    .enrich-section { margin-top: 0.5rem; }
+
+    .enrich-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-bottom: 0.85rem;
+      padding: 0.75rem 1rem;
+      background: #141721;
+      border: 1px solid #222634;
+      border-radius: 10px;
+    }
+
+    .enrich-stat-row {
+      display: flex;
+      gap: 1rem;
+      font-size: 0.78rem;
+      color: #94a3b8;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .enrich-stat { font-weight: 700; }
+    .enrich-stat.ok   { color: #34d399; }
+    .enrich-stat.warn { color: #fbbf24; }
+    .enrich-stat.muted { color: #64748b; }
+
+    .enrich-card {
+      background: #141721;
+      border: 1px solid #1e2538;
+      border-left: 4px solid #818cf8;
+      border-radius: 12px;
+      padding: 1rem;
+      margin-bottom: 0.75rem;
+      transition: border-color 0.2s;
+    }
+    .enrich-card:hover  { border-color: #6366f1; }
+    .enrich-card.has-desc { border-left-color: #34d399; }
+    .enrich-card.no-desc  { border-left-color: #f59e0b; }
+    .enrich-card.in-v2    { border-left-color: #64748b; opacity: 0.75; }
+
+    .enrich-title {
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-bottom: 0.35rem;
+      line-height: 1.3;
+    }
+
+    .enrich-meta {
+      font-size: 0.74rem;
+      color: #64748b;
+      display: flex;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.5rem;
+    }
+
+    .ai-desc-box {
+      background: #0d1117;
+      border: 1px solid #22304a;
+      border-radius: 8px;
+      padding: 0.7rem 0.9rem;
+      font-size: 0.76rem;
+      color: #a5b4cb;
+      line-height: 1.65;
+      max-height: 120px;
+      overflow-y: auto;
+      margin: 0.5rem 0 0.65rem;
+      white-space: pre-wrap;
+    }
+
+    .ai-desc-placeholder { color: #374151; font-style: italic; }
+
+    .btn-violet {
+      background: linear-gradient(135deg, #6366f1, #818cf8);
+      color: #fff;
+      box-shadow: 0 4px 18px rgba(99,102,241,0.3);
+    }
+    .btn-violet:hover { box-shadow: 0 6px 22px rgba(99,102,241,0.45); }
+
+    .btn-push {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #fff;
+      box-shadow: 0 4px 18px rgba(16,185,129,0.3);
+    }
+    .btn-push:hover { box-shadow: 0 6px 22px rgba(16,185,129,0.45); }
+  </style>
+</head>
+
+<body>
+
+  <header>
+    <div>
+      <div class="brand-title">VeerNXT Job Scraper & AI Sync Engine</div>
+      <div class="subtitle">Multi-Tag Classifier · Sub-10s AI Inference · Real-time Database Diff & Deduplication</div>
+    </div>
+    <div class="header-actions">
+      <button id="btnUploadToDb" class="btn-upload-primary" disabled>
+        <span>☁️ Upload to Database</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <div class="main-panel">
+
+      <!-- Phase 3 Deep Scrape & Fast AI Filter Card -->
+      <div class="card">
+        <h3>🚀 Deep Scrape, Multi-Tagging & Database Diff</h3>
+        <p>Scrapes live portals (Sarkari Job Portal & Sarkari Officer), triggers sub-10s parallel AI tagging (<code>government_job</code>, <code>banking_job</code>, <code>peon_job</code>, etc.), and checks status against your Supabase database.</p>
+        
+        <div class="config-row">
+          <div class="config-item">
+            <label for="maxJobs">Max Jobs:</label>
+            <input type="number" id="maxJobs" value="5" min="1" max="50" />
+          </div>
+          <div class="config-item">
+            <label for="maxPages">Pages/Source:</label>
+            <input type="number" id="maxPages" value="1" min="1" max="5" />
+          </div>
+          <button id="btnSarkariScrape">
+            <span>⚡ Start Scrape & AI Analysis</span>
+          </button>
+          <button id="btnRecheckDb" class="btn-secondary" style="display: none;">
+            <span>🔄 Recheck DB Status</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Results Area -->
+      <div id="resultsContainer" style="display: none;">
+        
+        <!-- Stats Banner -->
+        <div class="stats-banner" id="statsBanner">
+          <div class="stat-box">
+            <div class="stat-num" id="statFetched" style="color: #e2e8f0;">0</div>
+            <div class="stat-label">Total Scraped</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-num" id="statNew" style="color: #34d399;">0</div>
+            <div class="stat-label">🟢 New Jobs</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-num" id="statUpdates" style="color: #fbbf24;">0</div>
+            <div class="stat-label">🟡 Updates Avail</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-num" id="statExpired" style="color: #f87171;">0</div>
+            <div class="stat-label">🔴 Expired</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-num" id="statUpToDate" style="color: #94a3b8;">0</div>
+            <div class="stat-label">⚪ In Database</div>
+          </div>
+        </div>
+
+        <!-- Filter Toolbar -->
+        <div class="results-toolbar">
+          <div class="filter-tabs">
+            <div class="tab-pill active" data-filter="ALL">All (<span id="countAll">0</span>)</div>
+            <div class="tab-pill" data-filter="NEW">🟢 New (<span id="countNew">0</span>)</div>
+            <div class="tab-pill" data-filter="UPDATE_AVAILABLE">🟡 Updates (<span id="countUpdates">0</span>)</div>
+            <div class="tab-pill" data-filter="EXPIRED">🔴 Expired (<span id="countExpired">0</span>)</div>
+            <div class="tab-pill" data-filter="UP_TO_DATE">⚪ In DB (<span id="countInDb">0</span>)</div>
+          </div>
+
+          <div class="search-input-wrap">
+            <input type="text" id="filterSearch" placeholder="Search by title, tag, body..." />
+          </div>
+        </div>
+
+        <!-- Job Cards List -->
+        <div id="jobList"></div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════════════════ -->
+      <!--  LEGACY JOBS → JOBS_V2 ENRICHMENT PIPELINE               -->
+      <!-- ══════════════════════════════════════════════════════════ -->
+      <div class="card enrich-section">
+        <h3>🔄 Enrich Legacy Jobs → Push to jobs_v2</h3>
+        <p>Fetches all rows from the legacy <code>jobs</code> table, automatically skips any jobs already in <code>jobs_v2</code>, runs tagging and optional AI descriptions, and stages them for pushing.</p>
+
+        <div class="config-row" style="align-items: center; flex-wrap: wrap; gap: 12px;">
+          <!-- Batch Size Input -->
+          <div class="config-item" style="display: flex; align-items: center; gap: 10px; min-width: auto;">
+            <label for="enrichBatchLimit" style="margin: 0; font-weight: 600; white-space: nowrap;">Convert N jobs:</label>
+            <input type="number" id="enrichBatchLimit" value="0" min="0" max="10000"
+              style="width: 90px;"
+              title="How many unmigrated jobs to process. 0 = process all remaining unmigrated jobs."
+              placeholder="0 = All" />
+            <span style="font-size: 0.78rem; color: var(--text-muted); white-space: nowrap;">0 = all unmigrated</span>
+          </div>
+
+          <!-- AI Descriptions Toggle -->
+          <div class="config-item" style="display: flex; align-items: center; gap: 8px; min-width: auto;">
+            <input type="checkbox" id="enrichGenAi" checked style="width: 16px; height: 16px; margin: 0; cursor: pointer;" />
+            <label for="enrichGenAi" style="margin: 0; cursor: pointer;">Generate AI Descriptions</label>
+          </div>
+
+          <button id="btnFetchEnrich" class="btn-violet">
+            <span>🤖 Fetch &amp; AI Enrich</span>
+          </button>
+          <button id="btnPushToV2" class="btn-push" disabled>
+            <span>🚀 Push to jobs_v2 (<span id="enrichReadyCount">0</span>)</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Enriched Staged Results -->
+      <div id="enrichResultsContainer" style="display: none;" class="enrich-section">
+        <div class="enrich-toolbar">
+          <div class="enrich-stat-row">
+            <span>Total: <span class="enrich-stat ok" id="enrichStatTotal">0</span></span>
+            <span>With AI Desc: <span class="enrich-stat ok" id="enrichStatDesc">0</span></span>
+            <span>No Desc: <span class="enrich-stat warn" id="enrichStatNoDesc">0</span></span>
+            <span>Skipped (Already in V2): <span class="enrich-stat muted" id="enrichStatExisting">0</span></span>
+          </div>
+          <div class="search-input-wrap">
+            <input type="text" id="enrichSearch" placeholder="Search enriched jobs..." />
+          </div>
+        </div>
+        <div id="enrichList"></div>
+      </div>
+
+    </div>
+
+
+    <!-- Live Log Panel -->
+    <div class="log-panel">
+      <div class="log-header">
+        <div class="log-header-left">
+          <div class="log-dot"></div>
+          Live Execution Logs
+        </div>
+        <button id="btnClearLog" class="btn-secondary btn-sm">Clear</button>
+      </div>
+      <div class="log-body" id="logBody">
+        <div class="log-line info">[Ready] Scraper engine ready. Click "Start Scrape & AI Analysis" to begin.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload to Database Modal -->
+  <div class="modal-backdrop" id="uploadModal">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h3>Sync with Database</h3>
+        <button id="btnModalClose" class="btn-secondary btn-sm">✕</button>
+      </div>
+      <div class="modal-body">
+        Select which actions to execute on your Supabase <code>public.jobs_v2</code> table. Duplicates (jobs already up-to-date) are automatically skipped.
+        
+        <div class="modal-options">
+          <label class="modal-option-item">
+            <input type="checkbox" id="syncOptNew" checked>
+            <span>Insert New Jobs (<strong id="modalNewCount" style="color: #34d399;">0</strong>)</span>
+          </label>
+          <label class="modal-option-item">
+            <input type="checkbox" id="syncOptUpdates" checked>
+            <span>Apply Updates to Changed Jobs (<strong id="modalUpdatesCount" style="color: #fbbf24;">0</strong>)</span>
+          </label>
+          <label class="modal-option-item">
+            <input type="checkbox" id="syncOptExpired">
+            <span>Delete / Purge Expired Jobs from DB (<strong id="modalExpiredCount" style="color: #f87171;">0</strong>)</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnModalCancel" class="btn-secondary">Cancel</button>
+        <button id="btnModalConfirm" class="btn-upload-primary">Confirm & Upload</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div class="toast" id="toastMessage">
+    <span id="toastText">Action completed</span>
+  </div>
+
+  <script>
+    // State
+    let currentJobs = [];
+    let currentFilter = 'ALL';
+    let searchQuery = '';
+
+    const logBody = document.getElementById('logBody');
+    const resultsContainer = document.getElementById('resultsContainer');
+    const jobList = document.getElementById('jobList');
+    const btnSarkariScrape = document.getElementById('btnSarkariScrape');
+    const btnUploadToDb = document.getElementById('btnUploadToDb');
+    const btnRecheckDb = document.getElementById('btnRecheckDb');
+    const btnClearLog = document.getElementById('btnClearLog');
+    const filterSearch = document.getElementById('filterSearch');
+
+    // Modal elements
+    const uploadModal = document.getElementById('uploadModal');
+    const btnModalClose = document.getElementById('btnModalClose');
+    const btnModalCancel = document.getElementById('btnModalCancel');
+    const btnModalConfirm = document.getElementById('btnModalConfirm');
+    const syncOptNew = document.getElementById('syncOptNew');
+    const syncOptUpdates = document.getElementById('syncOptUpdates');
+    const syncOptExpired = document.getElementById('syncOptExpired');
+
+    // Toast
+    const toastMessage = document.getElementById('toastMessage');
+    const toastText = document.getElementById('toastText');
+
+    function showToast(msg, isError = false) {
+      toastText.textContent = msg;
+      toastMessage.style.borderColor = isError ? '#f87171' : '#4ade80';
+      toastMessage.classList.add('show');
+      setTimeout(() => toastMessage.classList.remove('show'), 3500);
+    }
+
+    // Live Log Listener
+    window.electronAPI.onLogMessage((data) => {
+      const line = document.createElement('div');
+      line.className = `log-line ${data.type || 'info'}`;
+      line.textContent = data.message;
+      logBody.appendChild(line);
+      logBody.scrollTop = logBody.scrollHeight;
+    });
+
+    btnClearLog.addEventListener('click', () => {
+      logBody.innerHTML = '<div class="log-line info">[Cleared] Logs reset.</div>';
+    });
+
+    function addLocalLog(msg, type = 'info') {
+      const line = document.createElement('div');
+      line.className = `log-line ${type}`;
+      line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      logBody.appendChild(line);
+      logBody.scrollTop = logBody.scrollHeight;
+    }
+
+    // Filter Tabs
+    document.querySelectorAll('.tab-pill').forEach(pill => {
+      pill.addEventListener('click', () => {
+        document.querySelectorAll('.tab-pill').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        currentFilter = pill.getAttribute('data-filter');
+        renderJobs();
+      });
+    });
+
+    filterSearch.addEventListener('input', (e) => {
+      searchQuery = e.target.value.toLowerCase().trim();
+      renderJobs();
+    });
+
+    // Scrape Trigger
+    btnSarkariScrape.addEventListener('click', async () => {
+      const maxJobs = parseInt(document.getElementById('maxJobs').value) || 5;
+      const maxPages = parseInt(document.getElementById('maxPages').value) || 1;
+
+      btnSarkariScrape.disabled = true;
+      btnUploadToDb.disabled = true;
+      btnSarkariScrape.innerHTML = '<span class="spinner"></span> Scraping & AI Tagging...';
+
+      addLocalLog(`Starting pipeline (maxJobs=${maxJobs}, maxPages=${maxPages})...`, 'info');
+
+      try {
+        const result = await window.electronAPI.scrapeSarkariLatest({ maxJobs, maxPages });
+
+        if (result.ok) {
+          currentJobs = result.results || [];
+          resultsContainer.style.display = 'block';
+          btnRecheckDb.style.display = 'inline-flex';
+          btnUploadToDb.disabled = currentJobs.length === 0;
+
+          updateCountsAndStats();
+          renderJobs();
+          showToast(`Pipeline complete! ${currentJobs.length} jobs analyzed.`);
+        } else {
+          showToast(`Scrape Error: ${result.error}`, true);
+        }
+      } catch (err) {
+        showToast(`Unexpected Error: ${err.message}`, true);
+      } finally {
+        btnSarkariScrape.disabled = false;
+        btnSarkariScrape.innerHTML = '<span>⚡ Start Scrape & AI Analysis</span>';
+      }
+    });
+
+    // Recheck DB Status Button
+    btnRecheckDb.addEventListener('click', async () => {
+      if (currentJobs.length === 0) return;
+      btnRecheckDb.disabled = true;
+      btnRecheckDb.innerHTML = '<span class="spinner"></span> Checking...';
+
+      const res = await window.electronAPI.checkDbStatus(currentJobs);
+      if (res.ok) {
+        currentJobs = res.results || [];
+        updateCountsAndStats();
+        renderJobs();
+        showToast('Database status refreshed!');
+      } else {
+        showToast('Failed to check DB: ' + res.error, true);
+      }
+      btnRecheckDb.disabled = false;
+      btnRecheckDb.innerHTML = '<span>🔄 Recheck DB Status</span>';
+    });
+
+    function updateCountsAndStats() {
+      const counts = {
+        ALL: currentJobs.length,
+        NEW: 0,
+        UPDATE_AVAILABLE: 0,
+        EXPIRED: 0,
+        UP_TO_DATE: 0
+      };
+
+      currentJobs.forEach(job => {
+        const s = job.status || 'NEW';
+        counts[s] = (counts[s] || 0) + 1;
+      });
+
+      document.getElementById('statFetched').textContent = counts.ALL;
+      document.getElementById('statNew').textContent = counts.NEW;
+      document.getElementById('statUpdates').textContent = counts.UPDATE_AVAILABLE;
+      document.getElementById('statExpired').textContent = counts.EXPIRED;
+      document.getElementById('statUpToDate').textContent = counts.UP_TO_DATE;
+
+      document.getElementById('countAll').textContent = counts.ALL;
+      document.getElementById('countNew').textContent = counts.NEW;
+      document.getElementById('countUpdates').textContent = counts.UPDATE_AVAILABLE;
+      document.getElementById('countExpired').textContent = counts.EXPIRED;
+      document.getElementById('countInDb').textContent = counts.UP_TO_DATE;
+
+      document.getElementById('modalNewCount').textContent = counts.NEW;
+      document.getElementById('modalUpdatesCount').textContent = counts.UPDATE_AVAILABLE;
+      document.getElementById('modalExpiredCount').textContent = counts.EXPIRED;
+    }
+
+    function renderJobs() {
+      const filtered = currentJobs.filter(job => {
+        // Filter tab
+        if (currentFilter !== 'ALL' && job.status !== currentFilter) return false;
+
+        // Search query
+        if (searchQuery) {
+          const title = (job.exam_name || job.title || '').toLowerCase();
+          const body = (job.conducting_body || '').toLowerCase();
+          const tagsStr = (job.tags || []).join(' ').toLowerCase();
+          const sector = (job.job_sector || '').toLowerCase();
+          return title.includes(searchQuery) || body.includes(searchQuery) || tagsStr.includes(searchQuery) || sector.includes(searchQuery);
+        }
+
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        jobList.innerHTML = `<div style="text-align: center; padding: 2rem; color: #64748b; font-size: 0.85rem;">No jobs match the current filter.</div>`;
+        return;
+      }
+
+      let html = '';
+
+      filtered.forEach((job, idx) => {
+        const status = job.status || 'NEW';
+        const tags = Array.isArray(job.tags) ? job.tags : [];
+        const diffs = Array.isArray(job.diffs) ? job.diffs : [];
+
+        let statusLabel = '🟢 NEW';
+        if (status === 'UPDATE_AVAILABLE') statusLabel = '🟡 UPDATE AVAILABLE';
+        else if (status === 'EXPIRED') statusLabel = '🔴 EXPIRED';
+        else if (status === 'UP_TO_DATE') statusLabel = '⚪ IN DATABASE';
+
+        html += `<div class="job-card status-${status}">`;
+        
+        // Header
+        html += `<div class="job-header">`;
+        html += `<div class="job-title">${job.exam_name || job.title || 'Unknown Job'}</div>`;
+        html += `<div class="badge-group">`;
+        html += `<span class="status-badge ${status}">${statusLabel}</span>`;
+        if (job.job_sector) {
+          html += `<span class="sector-badge">${job.job_sector}</span>`;
+        }
+        html += `</div>`;
+        html += `</div>`;
+
+        // Meta
+        html += `<div class="job-meta">`;
+        html += `<span>🏢 ${job.conducting_body || 'Department Unknown'}</span>`;
+        html += `<span>•</span>`;
+        html += `<span>Track: ${job.career_track || 'STATE_GOVT'}</span>`;
+        html += `</div>`;
+
+        // Multi-Tags
+        if (tags.length > 0) {
+          html += `<div class="tags-container">`;
+          tags.forEach(t => {
+            let chipClass = '';
+            if (t.includes('peon')) chipClass = 'tag-peon';
+            else if (t.includes('bank')) chipClass = 'tag-banking';
+            else if (t.includes('gov')) chipClass = 'tag-gov';
+            else if (t.includes('railway')) chipClass = 'tag-railway';
+            html += `<span class="tag-chip ${chipClass}">#${t}</span>`;
+          });
+          html += `</div>`;
+        }
+
+        // Diff box for Update Available
+        if (status === 'UPDATE_AVAILABLE' && diffs.length > 0) {
+          html += `<div class="diff-box">`;
+          html += `<div class="diff-header">⚠️ Updates Detected from Database Version:</div>`;
+          html += `<ul class="diff-list">`;
+          diffs.forEach(d => html += `<li>• ${d}</li>`);
+          html += `</ul>`;
+          html += `</div>`;
+        }
+
+        // Details Grid
+        html += `<div class="job-details">`;
+        html += `<div class="detail-row"><span class="detail-label">Vacancies:</span><span class="detail-value">${job.vacancies || 'N/A'}</span></div>`;
+        html += `<div class="detail-row"><span class="detail-label">Age Bracket:</span><span class="detail-value">${job.ageRange || 'N/A'}</span></div>`;
+        html += `<div class="detail-row"><span class="detail-label">Published Date:</span><span class="detail-value">${job.publishedOn || 'N/A'}</span></div>`;
+        html += `<div class="detail-row"><span class="detail-label">Last Date:</span><span class="detail-value" style="color: ${status === 'EXPIRED' ? '#f87171' : '#34d399'};">${job.lastDate || 'N/A'}</span></div>`;
+        html += `</div>`;
+
+        // Footer Actions
+        html += `<div class="card-footer">`;
+        html += `<div class="card-actions-left">`;
+        if (status === 'NEW') {
+          html += `<button class="btn-sm" onclick="syncSingleJob('${job.website || job.url}')">➕ Upload to DB</button>`;
+        } else if (status === 'UPDATE_AVAILABLE') {
+          html += `<button class="btn-sm btn-secondary" onclick="syncSingleJob('${job.website || job.url}')">🔄 Apply Update</button>`;
+        } else if (status === 'EXPIRED') {
+          html += `<button class="btn-sm btn-danger" onclick="syncSingleJob('${job.website || job.url}', true)">🗑️ Delete from DB</button>`;
+        } else {
+          html += `<span style="font-size: 0.72rem; color: #64748b;">Already in sync</span>`;
+        }
+        html += `</div>`;
+
+        if (job.website) {
+          html += `<a href="${job.website}" target="_blank" class="link-btn">View Official Notice →</a>`;
+        }
+        html += `</div>`;
+
+        html += `</div>`;
+      });
+
+      jobList.innerHTML = html;
+    }
+
+    // Modal Opening & Closing
+    btnUploadToDb.addEventListener('click', () => {
+      uploadModal.classList.add('active');
+    });
+
+    btnModalClose.addEventListener('click', () => uploadModal.classList.remove('active'));
+    btnModalCancel.addEventListener('click', () => uploadModal.classList.remove('active'));
+
+    // Confirm Bulk Upload
+    btnModalConfirm.addEventListener('click', async () => {
+      uploadModal.classList.remove('active');
+      btnUploadToDb.disabled = true;
+      btnUploadToDb.innerHTML = '<span class="spinner"></span> Syncing DB...';
+
+      const syncOptions = {
+        uploadNew: syncOptNew.checked,
+        applyUpdates: syncOptUpdates.checked,
+        deleteExpired: syncOptExpired.checked
+      };
+
+      addLocalLog(`Starting database sync with options: ${JSON.stringify(syncOptions)}`, 'info');
+
+      try {
+        const result = await window.electronAPI.uploadToDatabase({
+          jobs: currentJobs,
+          syncOptions
+        });
+
+        if (result.ok) {
+          showToast(`DB Sync Complete: +${result.addedCount} added, ~${result.updatedCount} updated, -${result.deletedCount} deleted`);
+          // Recheck DB status automatically to update tags and status
+          const checkRes = await window.electronAPI.checkDbStatus(currentJobs);
+          if (checkRes.ok) {
+            currentJobs = checkRes.results || [];
+            updateCountsAndStats();
+            renderJobs();
+          }
+        } else {
+          showToast(`Sync Failed: ${result.error}`, true);
+        }
+      } catch (err) {
+        showToast(`Sync Exception: ${err.message}`, true);
+      } finally {
+        btnUploadToDb.disabled = false;
+        btnUploadToDb.innerHTML = '<span>☁️ Upload to Database</span>';
+      }
+    });
+
+    // Single Job Sync Helper (exposed globally for inline button onclick)
+    window.syncSingleJob = async function(jobUrl, isDelete = false) {
+      const job = currentJobs.find(j => (j.website || j.url) === jobUrl);
+      if (!job) return;
+
+      addLocalLog(`Syncing single job: "${job.exam_name || job.title}"...`, 'info');
+
+      const result = await window.electronAPI.uploadToDatabase({
+        jobs: [job],
+        syncOptions: {
+          uploadNew: !isDelete,
+          applyUpdates: !isDelete,
+          deleteExpired: isDelete
+        }
+      });
+
+      if (result.ok) {
+        showToast(`Successfully processed "${job.exam_name || job.title}"!`);
+        const checkRes = await window.electronAPI.checkDbStatus(currentJobs);
+        if (checkRes.ok) {
+          currentJobs = checkRes.results || [];
+          updateCountsAndStats();
+          renderJobs();
+        }
+      } else {
+        showToast(`Error: ${result.error}`, true);
+      }
+    };
+
+    // ════════════════════════════════════════════════════════════════
+    // LEGACY JOBS → JOBS_V2 ENRICHMENT PIPELINE
+    // ════════════════════════════════════════════════════════════════
+    let enrichedJobs    = [];
+    let enrichSearchQ   = '';
+
+    const btnFetchEnrich  = document.getElementById('btnFetchEnrich');
+    const btnPushToV2     = document.getElementById('btnPushToV2');
+    const enrichResultsEl = document.getElementById('enrichResultsContainer');
+    const enrichListEl    = document.getElementById('enrichList');
+    const enrichSearchEl  = document.getElementById('enrichSearch');
+
+    enrichSearchEl.addEventListener('input', e => {
+      enrichSearchQ = e.target.value.toLowerCase().trim();
+      renderEnrichedJobs();
+    });
+
+    // ── 1. Fetch & Enrich ────────────────────────────────────────────
+    const enrichGenAiEl = document.getElementById('enrichGenAi');
+
+    btnFetchEnrich.addEventListener('click', async () => {
+      const batchLimit = parseInt(document.getElementById('enrichBatchLimit')?.value) || 0;
+      const generateAi = enrichGenAiEl ? enrichGenAiEl.checked : true;
+
+      btnFetchEnrich.disabled = true;
+      btnFetchEnrich.innerHTML = '<span class="spinner"></span> Fetching &amp; Enriching...';
+      btnPushToV2.disabled = true;
+
+      addLocalLog(batchLimit > 0
+        ? `🔄 Legacy Enrichment: fetching first ${batchLimit} unmigrated jobs (skipping existing jobs_v2)...`
+        : `🔄 Legacy Enrichment: fetching ALL unmigrated jobs from jobs table (skipping existing jobs_v2)...`, 'info');
+
+      try {
+        const result = await window.electronAPI.fetchAndEnrichJobs({ batchLimit, generateAi });
+
+        if (result.ok) {
+          enrichedJobs = result.jobs || [];
+          enrichResultsEl.style.display = 'block';
+
+          const withDesc = enrichedJobs.filter(j => j.ai_description).length;
+          const noDesc   = enrichedJobs.filter(j => !j.ai_description).length;
+          const skipped  = result.skippedCount || 0;
+          const pushable = enrichedJobs.length;
+
+          document.getElementById('enrichStatTotal').textContent    = enrichedJobs.length;
+          document.getElementById('enrichStatDesc').textContent     = withDesc;
+          document.getElementById('enrichStatNoDesc').textContent   = noDesc;
+          document.getElementById('enrichStatExisting').textContent = skipped;
+          document.getElementById('enrichReadyCount').textContent   = pushable;
+
+          btnPushToV2.disabled = pushable === 0;
+          renderEnrichedJobs();
+          showToast(`Enriched ${enrichedJobs.length} new jobs! (${skipped} already in jobs_v2 skipped)`);
+          addLocalLog(`✅ Enrichment complete — ${enrichedJobs.length} staged, ${withDesc} with AI desc, ${skipped} already in jobs_v2 skipped.`, 'success');
+        } else {
+          showToast(`Enrichment Error: ${result.error}`, true);
+          addLocalLog(`❌ Enrichment failed: ${result.error}`, 'error');
+        }
+      } catch (err) {
+        showToast(`Error: ${err.message}`, true);
+        addLocalLog(`❌ Exception: ${err.message}`, 'error');
+      } finally {
+        btnFetchEnrich.disabled = false;
+        btnFetchEnrich.innerHTML = '<span>🤖 Fetch &amp; AI Enrich</span>';
+      }
+    });
+
+    // ── 2. Bulk Push to jobs_v2 ──────────────────────────────────────
+    btnPushToV2.addEventListener('click', async () => {
+      const toPush = enrichedJobs.filter(j => !j.alreadyInV2);
+      if (toPush.length === 0) { showToast('Nothing new to push.', true); return; }
+
+      if (!confirm(`Push ${toPush.length} enriched jobs to jobs_v2 table? This cannot be undone.`)) return;
+
+      btnPushToV2.disabled = true;
+      btnPushToV2.innerHTML = '<span class="spinner"></span> Pushing to jobs_v2...';
+
+      addLocalLog(`🚀 Pushing ${toPush.length} enriched jobs to jobs_v2...`, 'info');
+
+      try {
+        const result = await window.electronAPI.pushToJobsV2(toPush);
+
+        if (result.ok) {
+          showToast(`✅ Pushed ${result.inserted} jobs to jobs_v2! ${result.skipped} skipped (duplicates).`);
+          addLocalLog(`🏁 Push complete — ${result.inserted} inserted, ${result.skipped} skipped, ${result.errors} errors.`, 'success');
+
+          enrichedJobs = enrichedJobs.map(j => !j.alreadyInV2 ? { ...j, alreadyInV2: true } : j);
+          const remaining = 0;
+          document.getElementById('enrichReadyCount').textContent   = remaining;
+          document.getElementById('enrichStatExisting').textContent = enrichedJobs.length;
+          renderEnrichedJobs();
+        } else {
+          showToast(`Push Error: ${result.error}`, true);
+          addLocalLog(`❌ Push failed: ${result.error}`, 'error');
+        }
+      } catch (err) {
+        showToast(`Exception: ${err.message}`, true);
+        addLocalLog(`❌ Exception: ${err.message}`, 'error');
+      } finally {
+        btnPushToV2.disabled = false;
+        btnPushToV2.innerHTML = `<span>🚀 Push to jobs_v2 (<span id="enrichReadyCount">0</span>)</span>`;
+      }
+    });
+
+    // ── Render enriched job cards ─────────────────────────────────────
+    function renderEnrichedJobs() {
+      let list = enrichedJobs;
+      if (enrichSearchQ) {
+        list = list.filter(j => {
+          const t    = (j.title || '').toLowerCase();
+          const tags = (j.tags || []).join(' ').toLowerCase();
+          const desc = (j.ai_description || '').toLowerCase();
+          return t.includes(enrichSearchQ) || tags.includes(enrichSearchQ) || desc.includes(enrichSearchQ);
+        });
+      }
+
+      if (list.length === 0) {
+        enrichListEl.innerHTML = '<div style="text-align:center;padding:2rem;color:#64748b;font-size:0.85rem;">No enriched jobs to display.</div>';
+        return;
+      }
+
+      let html = '';
+      list.forEach(job => {
+        const hasDesc = !!job.ai_description;
+        const inV2    = !!job.alreadyInV2;
+        const tags    = Array.isArray(job.tags) ? job.tags : [];
+        const cardCls = inV2 ? 'in-v2' : (hasDesc ? 'has-desc' : 'no-desc');
+
+        html += `<div class="enrich-card ${cardCls}">`;
+
+        // Title + status badges
+        html += `<div class="enrich-title">${(job.title || 'Untitled').replace(/</g,'&lt;')}`;
+        if (inV2)    html += ` <span style="font-size:0.62rem;background:rgba(100,116,139,0.15);color:#94a3b8;border-radius:10px;padding:2px 7px;font-weight:700;margin-left:4px;">✓ IN V2</span>`;
+        if (!inV2 && hasDesc) html += ` <span style="font-size:0.62rem;background:rgba(52,211,153,0.12);color:#34d399;border-radius:10px;padding:2px 7px;font-weight:700;margin-left:4px;">✨ AI DESC</span>`;
+        if (!inV2 && !hasDesc) html += ` <span style="font-size:0.62rem;background:rgba(245,158,11,0.12);color:#fbbf24;border-radius:10px;padding:2px 7px;font-weight:700;margin-left:4px;">⚠ NO DESC</span>`;
+        html += `</div>`;
+
+        // Meta
+        html += `<div class="enrich-meta">`;
+        if (job.career_track) html += `<span>📂 ${job.career_track}</span>`;
+        if (job.vacancies)    html += `<span>👥 ${job.vacancies} vacancies</span>`;
+        if (job.last_date)    html += `<span>📅 Last: ${new Date(job.last_date).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})}</span>`;
+        if (job.source_table) html += `<span>🗂 From: ${job.source_table}</span>`;
+        html += `</div>`;
+
+        // Tags
+        if (tags.length > 0) {
+          html += `<div class="tags-container">`;
+          tags.slice(0, 10).forEach(t => {
+            let cls = '';
+            if (t.includes('bank'))    cls = 'tag-banking';
+            else if (t.includes('gov'))     cls = 'tag-gov';
+            else if (t.includes('railway')) cls = 'tag-railway';
+            else if (t.includes('peon'))    cls = 'tag-peon';
+            html += `<span class="tag-chip ${cls}">#${t}</span>`;
+          });
+          if (tags.length > 10) html += `<span class="tag-chip" style="color:#64748b;">+${tags.length - 10} more</span>`;
+          html += `</div>`;
+        }
+
+        // AI Description preview
+        if (hasDesc) {
+          html += `<div class="ai-desc-box">${job.ai_description.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`;
+        } else {
+          html += `<div class="ai-desc-box ai-desc-placeholder">No AI description generated — page text may have been too short, or AI timed out.</div>`;
+        }
+
+        // Footer
+        html += `<div class="card-footer">`;
+        if (!inV2) {
+          const safeUrl = (job.url || '').replace(/"/g, '&quot;');
+          html += `<button class="btn-sm btn-violet" onclick="pushSingleToV2('${safeUrl}')" style="padding:0.3rem 0.8rem;font-size:0.72rem;border-radius:6px;">🚀 Push This Job</button>`;
+        } else {
+          html += `<span style="font-size:0.72rem;color:#64748b;">Already in jobs_v2</span>`;
+        }
+        if (job.url) {
+          html += `<a href="${job.url}" target="_blank" class="link-btn">Source →</a>`;
+        }
+        html += `</div>`;
+
+        html += `</div>`;
+      });
+
+      enrichListEl.innerHTML = html;
+    }
+
+    // ── Single job push ──────────────────────────────────────────────
+    window.pushSingleToV2 = async function(jobUrl) {
+      const job = enrichedJobs.find(j => (j.url || j.website) === jobUrl);
+      if (!job || job.alreadyInV2) return;
+
+      addLocalLog(`🚀 Pushing single enriched job: "${job.title}"...`, 'info');
+      const result = await window.electronAPI.pushToJobsV2([job]);
+
+      if (result.ok && result.inserted > 0) {
+        showToast(`Pushed "${job.title.substring(0,40)}..." to jobs_v2!`);
+        const idx = enrichedJobs.indexOf(job);
+        if (idx !== -1) enrichedJobs[idx] = { ...job, alreadyInV2: true };
+        const pushable = enrichedJobs.filter(j => !j.alreadyInV2).length;
+        document.getElementById('enrichReadyCount').textContent   = pushable;
+        document.getElementById('enrichStatExisting').textContent = enrichedJobs.filter(j => j.alreadyInV2).length;
+        renderEnrichedJobs();
+      } else {
+        showToast(`Push failed: ${result.error || 'Duplicate or DB error'}`, true);
+        addLocalLog(`❌ Single push failed: ${result.error}`, 'error');
+      }
+    };
+  </script>
+</body>
+</html>
+

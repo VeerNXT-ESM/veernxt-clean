@@ -15,7 +15,7 @@ Live site: https://www.veernxt.in
 | Files | Cloudflare R2 (book chapters, banners, media) |
 | Services | MSG91 (OTP, SMS, WhatsApp), Razorpay (subscriptions), Gmail SMTP (email) |
 
-There is **no AI in the product** and **no automated test suite**.
+The running site makes **no AI calls**, and there is **no automated test suite**. One thing to know: the job descriptions shown on the Jobs page are written by an AI model offline, by the job scraper in `scraper/`, and stored in `jobs_v2.ai_description`. See `docs/scraper/README.md`.
 
 ## Quick start
 
@@ -51,6 +51,7 @@ npm run dev            # http://localhost:8080
 | `backend/` | `engine/` (eligibility and scoring) and `points/` (points catalogue) |
 | `sql/` | Migrations, applied by hand in the Supabase SQL editor. `schema.sql` at the root may be out of date |
 | `scripts/` | Only the three files the running API imports (see `scripts/README.md`) |
+| `scraper/` | Desktop job scraper (Electron). Not part of the web deploy. Docs in `docs/scraper/` |
 | `public/` | Static files served as-is |
 | `docs/` | Handover documents and diagrams |
 | `test-data/` | 33 synthetic profiles for testing profiling |
@@ -58,9 +59,10 @@ npm run dev            # http://localhost:8080
 ## Read next
 
 1. `docs/MASTER_HANDOVER_REFERENCE.md`: constraints, cleanup backlog, R2, functions, parser, cover studio
-2. `docs/diagrams/README.md`: eight interactive diagrams (open the `.html` files in a browser)
-3. `docs/FRONTEND_MAP.md`: routes, layouts, theming, the banner CMS
-4. `docs/VERCEL_FUNCTIONS.md`: the 12-function limit and how to work within it
+2. `docs/scraper/README.md`: the job scraper and its AI setup
+3. `docs/diagrams/README.md`: eight interactive diagrams (open the `.html` files in a browser)
+4. `docs/FRONTEND_MAP.md`: routes, layouts, theming, the banner CMS
+5. `docs/VERCEL_FUNCTIONS.md`: the 12-function limit and how to work within it
 
 ## Things that will bite you
 

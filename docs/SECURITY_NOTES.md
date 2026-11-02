@@ -30,6 +30,10 @@ If `MSG91_AUTH_KEY` or `MSG91_TEMPLATE_ID` is missing, `api/auth/otp.js` pretend
 
 The previous repository (`VeerNXT-ESM/veernxt-web`) and some local archives still contain live keys: Supabase service-role key and access token, Razorpay secret, R2 secret, MSG91, admin secret, plus unused OpenAI, GCP and AI-proxy keys. This repository was started with no history, but those keys are still valid until rotated. Rotate them, then make the old repository private or archive it.
 
-## 7. Row-level security
+## 7. The job scraper
+
+`scraper/` writes to `jobs_v2` with the Supabase **service-role key** (bypasses RLS) and calls an AI provider with its own key. Both come from a local `.env` that is never committed. The scraper as received carried a hard-coded fallback token for a private AI service and a live `.env`; both were removed from this copy, but the old scraper repository's history and the sender's machine still hold them. Treat the AI service token, the OpenRouter key and the Supabase service-role key used by the scraper as compromised and rotate them with the rest (section 6).
+
+## 8. Row-level security
 
 Test RLS with the anon key, not only the service-role key. The database has 47 tables and views; check each user-facing table has an RLS policy before relying on it.

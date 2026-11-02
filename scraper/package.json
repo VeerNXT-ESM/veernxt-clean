@@ -1,0 +1,21 @@
+{
+  "name": "veernxt-scraper",
+  "version": "1.0.0",
+  "description": "VeerNXT Government Jobs Scraper Desktop App",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "author": "Quantum Climb",
+  "license": "ISC",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "dotenv": "^17.4.2",
+    "fast-xml-parser": "^4.3.5",
+    "playwright": "^1.42.1",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "electron": "^29.1.0"
+  }
+}

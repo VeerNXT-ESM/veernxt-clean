@@ -14,7 +14,7 @@
 3. In Vercel: connect `VeerNXT-ESM/veernxt-clean`, set the Production Branch to `main`, enter the env vars (names in `.env.example`, values from the password manager), check the first deploy, and keep the old project running until it is verified. **Rotate keys only after the new deploy works, and update Vercel's env vars in the same step**, or the live site loses its keys. Hosting elsewhere: the `api/*.js` files are Vercel-style handlers and `vercel.json` holds the rewrites, so they need adapting.
 
 ## Do first (new team)
-1. **Rotate the old keys** (Supabase service role and access token, Razorpay secret, R2 secret, MSG91, admin secret; revoke the unused OpenAI, GCP and AI-proxy keys). Then make the old repo private or archive it.
+1. **Rotate the old keys** (Supabase service role and access token, Razorpay secret, R2 secret, MSG91, admin secret; revoke the unused OpenAI, GCP and AI-proxy keys; also the job scraper's Supabase key, AI service token and OpenRouter key, which the scraper's sender still holds). Then make the old repo private or archive it.
 2. **Fix the public admin secret.** `VITE_ADMIN_API_SECRET` is compiled into the public JavaScript bundle (confirmed 2026-11-01). Move admin calls to the admin's Supabase session, then rotate `ADMIN_API_SECRET`. Full list: `docs/SECURITY_NOTES.md`.
 3. Check Vercel env vars: `DEVTEST` must be unset; `MSG91_AUTH_KEY` and `MSG91_TEMPLATE_ID` must be set (otherwise OTP runs in simulation mode with code 123456).
 4. Remove or guard the public dev routes (`/dev-reader`, `/profiling-tester`, `/admin/profiling-tester`, `/dev-quiz-preview`, `/demo-cards`).
@@ -26,7 +26,8 @@
 - `site_videos` table exists in the live database (from Shreya's commit) but nothing in this repo reads it. Leave or drop; the new team decides.
 - Move remaining images to R2 (signed-in banners, Learning Center placeholders, `state_images`, `category_thumbnails`, `thumbnails/books`, Finance QR codes, sounds). `public/` is still about 150 MB.
 - The 21 open items in section 11 of the handover document; accounts, passwords and keys transfer (done through the password manager, not this repo).
-- Souvik's new scraper; screenshots of the 73 routes (`SCREENSHOT_PLAN.md`).
+- Scraper: shipped in `scraper/` (docs in `docs/scraper/`), set to OpenAI by default with no key bundled. Not run by us. Test it against a non-production Supabase project first.
+- Screenshots of the 73 routes (`SCREENSHOT_PLAN.md`).
 - The graph is code-only (no semantic pass over docs or images). Rebuild with `/graphify . --update` after structural changes.
 
 ## Decisions taken

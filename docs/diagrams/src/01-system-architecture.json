@@ -248,10 +248,10 @@
     },
     {
       "dot": "rose",
-      "title": "No AI",
+      "title": "AI only offline",
       "items": [
-        "The site makes no LLM calls",
-        "The chat widget is a scripted FAQ"
+        "The site makes no LLM calls; the chat widget is a scripted FAQ",
+        "Job descriptions are written by the scraper with an AI model and stored in the database"
       ]
     }
   ]
