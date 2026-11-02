@@ -33,8 +33,8 @@ const JOBS_TABLE = process.env.JOBS_TABLE || 'jobs_v2';
 //   AI_PROVIDER=openai      (default) OpenAI. Needs OPENAI_API_KEY; model AI_MODEL (default gpt-4o-mini)
 //   AI_PROVIDER=openrouter  OpenRouter. Needs OPENROUTER_API_KEY; model OPENROUTER_MODEL
 //   AI_PROVIDER=custom      your own endpoint. Needs AI_API_URL, AI_API_KEY and AI_MODEL
-// No key is bundled with this app: without one the AI steps fail and the scraper falls back to
-// its non-AI behaviour where it can.
+// No key is bundled with this app. Without a working key: the AI filter is replaced by simple
+// title rules (looksLikeNonJob), and jobs are saved WITHOUT a description (there is no template).
 const AI_PROVIDER = (process.env.AI_PROVIDER || 'openai').toLowerCase();
 
 const AI_API_URL = AI_PROVIDER === 'openrouter'
@@ -245,6 +245,17 @@ function classifyMultiTags(job) {
 }
 
 /**
+ * Rule-based check used only when the AI filter is unavailable: true for posts that are not
+ * recruitment notices (results, admit cards, answer keys, syllabus, cut-offs, admissions...).
+ */
+function looksLikeNonJob(job) {
+  const t = String(job.exam_name || job.title || '');
+  const nonJobWords = /\b(admit card|hall ticket|result|answer key|syllabus|cut[- ]?off|merit list|score ?card|admission|counselling|counseling|seat allotment|exam city|city intimation|exam date|time ?table|call letter)\b/i;
+  const looksLikeRecruitment = /\b(apply online|online form|vacanc(y|ies))\b/i;
+  return nonJobWords.test(t) && !looksLikeRecruitment.test(t);
+}
+
+/**
  * Sends scraped jobs through the AI API in parallel batches to filter out expired/irrelevant jobs
  * and assign multi-tags (government_job, banking_job, peon_job, etc.).
  * Completes under 10 seconds via parallel execution and strict timeout fallback.
@@ -380,6 +391,10 @@ Tags MUST be lowercase snake_case (e.g. government_job, banking_job, peon_job, c
         const idx = jobs.indexOf(job);
         const covered = aiResults.some(r => r.index === idx);
         if (!covered) {
+          if (looksLikeNonJob(job)) {
+            discardedJobs.push({ ...job, discard_reason: 'rule: not a recruitment post (result, admit card, answer key, syllabus...)' });
+            continue;
+          }
           job.tags = classifyMultiTags(job);
           job.job_sector = job.career_track || 'Other';
           job.ai_status = 'rule_fallback';
@@ -389,6 +404,10 @@ Tags MUST be lowercase snake_case (e.g. government_job, banking_job, peon_job, c
     } else {
       // Fallback for failed/timed-out batch
       batch.forEach(job => {
+        if (looksLikeNonJob(job)) {
+          discardedJobs.push({ ...job, discard_reason: 'rule: not a recruitment post (result, admit card, answer key, syllabus...)' });
+          return;
+        }
         job.tags = classifyMultiTags(job);
         job.job_sector = job.career_track || 'Other';
         job.ai_status = 'rule_fallback';
@@ -799,7 +818,11 @@ ipcMain.handle('scrape-sarkari-latest', async (event, options = {}) => {
           await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
           const pageItems = await page.$$eval('article, .elementor-post, .type-post', elements => {
             return elements.map(el => {
-              const titleTag = el.querySelector('h2.entry-title a, h3.entry-title a, h2 a, h3 a');
+              // Classic WordPress themes use h2/h3 title links. Sarkari Officer's newer layout has none:
+              // there the title is the first dated post link (/YYYY/MM/DD/slug) that is not the "Read Latest" button.
+              const titleTag = el.querySelector('h2.entry-title a, h3.entry-title a, h2 a, h3 a')
+                || Array.from(el.querySelectorAll('a[href]')).find(a =>
+                  /\/\d{4}\/\d{2}\/\d{2}\//.test(a.href) && a.innerText.trim() && !/^read latest/i.test(a.innerText.trim()));
               return {
                 title: titleTag ? titleTag.innerText.trim() : null,
                 link: titleTag ? titleTag.href : null
