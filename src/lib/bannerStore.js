@@ -135,21 +135,7 @@ export const BANNER_SLOTS = [
     height: 1080,
     defaults: { image: `${SITE_MEDIA_BASE}/site/landing/hero_image.ee9a1a57.webp`, video: `${SITE_MEDIA_BASE}/site/landing/hero_video1.39a0210f.mp4` },
   },
-  ...[
-    ['en', 'English', '3HBSfoM2Sls'],
-    ['hi', 'Hindi', 'wG--TwXf6yI'],
-    ['mr', 'Marathi', 'VXhSDvpQOPk'],
-    ['te', 'Telugu', 'LMnM9SU5rAM'],
-    ['ta', 'Tamil', 'OdeYjGGomXY'],
-    ['kn', 'Kannada', 'mgT1G9y8J3E'],
-  ].map(([lang, name, id]) => ({
-    key: `landing.video.${lang}`,
-    page: 'Landing page',
-    path: '/',
-    label: `"What is VeerNXT?" YouTube video (${name})${lang === 'en' ? ' - also the fallback for other languages' : ''}`,
-    kind: 'youtube',
-    defaults: { video: id },
-  })),
+  // The six "What is VeerNXT?" YouTube videos live in the site_videos table (Admin -> Videos, src/lib/videoStore.js).
   ...[
     ['services_1', 'Service card 1', 1448, 1086, `${SITE_MEDIA_BASE}/site/landing/F3A.afa74d3e.webp`],
     ['services_2', 'Service card 2', 1448, 1086, `${SITE_MEDIA_BASE}/site/landing/F3_B.57cfe188.webp`],

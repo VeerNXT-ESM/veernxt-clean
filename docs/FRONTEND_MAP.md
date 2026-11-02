@@ -46,6 +46,7 @@ All routes are in `App.jsx`. There are four kinds:
 - The `site_banners` table (migrations `sql/site_banners.sql`, `sql/site_banners_video.sql`) only stores overrides. An empty field falls back to the default in code, so with no rows the site looks as designed.
 - Defaults for the landing page are files on R2 (`site/landing/`, base address in `SITE_MEDIA_BASE`). Replace one from Admin > Banners, or change the constant if the bucket's public address changes.
 - Admin > Banners is split into tabs (Marketing page, Home page, Learning Center, Jobs, Finance, Legal). Finance and Legal have no slots yet; to add one, append an entry to `BANNER_SLOTS` and put the tab's page name in `BANNER_TABS` (`src/pages/admin/BannersPage.jsx`).
+- **Videos are separate.** The six "What is VeerNXT?" YouTube videos are rows in the `site_videos` table (`sql/site_videos.sql`), edited in Admin > Videos (`src/pages/admin/VideosPage.jsx`) and read by `src/lib/videoStore.js` (`useLandingVideoId`). A language with no row uses the default id in `videoStore.js`. Admin writes go through `api/admin/misc.js`, which lists `site_videos` in `WRITABLE_TABLES`.
 - Hooks: `useBanner(key)` returns the resolved banner for a slot; `bannerImageStyle()` turns it into a CSS variable.
 
 ## Where data comes from

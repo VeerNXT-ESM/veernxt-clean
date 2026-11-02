@@ -2,6 +2,8 @@
 
 **As of:** 2026-10-28 · **For:** us only (not for the incoming team) · **Not in the repo folder on purpose.**
 
+> **Update 2026-11-02:** this report is older than `NEXT_STEPS.md`; where they differ, NEXT_STEPS wins. Notably, Shreya's Videos CMS (Admin > Videos, `site_videos`) was later brought in at the owner's request: the landing page now reads its YouTube videos from that table, and the six YouTube slots were removed from Admin > Banners.
+
 ## 1. Ground rules we agreed
 - Work only in the **clean copy**: `K:\H DRIVE\Quantum Climb\APPS\VeerNXT\VeerNXT Handover\veernxt-web`. The originals (`VeerNXT Main Repo\VeerNXT APP\veernxt-web`) are untouched.
 - **No cleanup and no database cleanup**: the new team does that. Our goal is that what is on the live site keeps working.

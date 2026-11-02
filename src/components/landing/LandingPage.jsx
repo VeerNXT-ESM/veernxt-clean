@@ -10,7 +10,8 @@ import { useState } from 'react';
 import { AnimatePresence } from 'motion/react';
 import { useSeo } from '../../lib/useSeo';
 import ThemeToggle from '../ui/ThemeToggle';
-import { useBanner, useBanners, parseYouTubeId } from '../../lib/bannerStore';
+import { useBanner, useBanners } from '../../lib/bannerStore';
+import { useLandingVideoId } from '../../lib/videoStore';
 
 // ─── NAVBAR ──────────────────────────────────────────────────────────────────
 
@@ -149,9 +150,7 @@ const Hero = () => {
 const WhatIsVeerNXT = () => {
   const { t, i18n } = useTranslation();
   // Video ids are managed in Admin -> Banners (one slot per language); English is the fallback.
-  const langKey = `landing.video.${i18n.language}`;
-  const videos = useBanners(['landing.video.en', 'landing.video.hi', 'landing.video.mr', 'landing.video.te', 'landing.video.ta', 'landing.video.kn']);
-  const videoId = parseYouTubeId((videos[langKey] || videos['landing.video.en']).video) || parseYouTubeId(videos['landing.video.en'].video);
+  const videoId = useLandingVideoId(i18n.language);
 
   return (
     <section className="py-24 bg-white text-gray-900 dark:bg-[#0d0d0d] dark:text-white">
