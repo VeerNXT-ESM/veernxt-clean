@@ -245,6 +245,26 @@ function classifyMultiTags(job) {
 }
 
 /**
+ * Picks the job's display name. A details-table value is used only if it looks like a real name:
+ * placeholders ("Notify Later", "To Be Announced") and bare dates are rejected, and the post headline
+ * is the fallback. (The old code matched any row whose label contained "Exam", e.g. "Exam Date".)
+ */
+function pickExamName(headline, ...candidates) {
+  const months = /(january|february|march|april|may|june|july|august|september|october|november|december)/i;
+  const placeholders = ['notify later', 'to be announced', 'will be announced', 'available soon', 'update soon', 'not available', 'n/a', 'tba', 'tbd'];
+  const looksReal = (v) => {
+    if (!v) return false;
+    const t = String(v).trim();
+    if (t.length < 8 || !/[a-z]/i.test(t)) return false;
+    const lower = t.toLowerCase();
+    if (placeholders.some((p) => lower === p || lower.includes(p))) return false;
+    if (/[0-9]/.test(t) && months.test(t) && t.length < 25) return false;
+    return true;
+  };
+  return candidates.find(looksReal) || headline;
+}
+
+/**
  * Rule-based check used only when the AI filter is unavailable: true for posts that are not
  * recruitment notices (results, admit cards, answer keys, syllabus, cut-offs, admissions...).
  */
@@ -937,7 +957,7 @@ ipcMain.handle('scrape-sarkari-latest', async (event, options = {}) => {
             raw_category: item.sourceName || 'Sarkari Job Portal',
             career_track: track,
             conducting_body: findValue('Organization') || findValue('Department') || item.sourceName || "Unknown",
-            exam_name: findValue('Exam Name') || findValue('Exam') || findValue('Recruitment Name') || item.title,
+            exam_name: pickExamName(item.title, findValue('Exam Name'), findValue('Recruitment Name')),
             website: item.link,
             min_qualification: normalizedQual,
             physical_required: /physical|pet|pst|height|measurement/i.test(rawText),

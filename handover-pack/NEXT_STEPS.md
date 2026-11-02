@@ -26,7 +26,7 @@
 ## Decisions taken at handover (2026-11-02)
 - **Admin accounts:** the outgoing team creates one Super Admin for the new team. The new team handles all other Supabase users and the cleanup of the old admin accounts (`docs/SECURITY_NOTES.md` section 8).
 - **Account transfers:** none needed. The new team gets access to the Google profile that owns the services (Supabase, R2, Vercel, GitHub, Razorpay, MSG91, domain mail) and so to everything behind it. Rotate the keys after that.
-- **Scraper AI key:** a new OpenAI key is in place (tested accepted). The scraper needs a restart to use it.
+- **Scraper:** tested end to end on 2026-11-02 with the new OpenAI key. It enriched 16 jobs, inserted 2 new ones, and `scraper/cleanup_expired.js` removed 106 expired jobs and 3 duplicates from `jobs_v2` (446 to 337 rows; backups taken first). Run the clean-up script after each scrape until the scheduled version exists. Details: `docs/scraper/README.md`.
 - **Database audit and any refactor** (`docs/CLEANUP_AUDIT.md` section 13, duplicate exam tables; `docs/REFACTOR_PLAN.md`) are the new team's work. Nothing was changed in the database by us beyond the `site_banners_video.sql` migration.
 - **Hosting:** the new team connects Vercel (or another host) to `veernxt-clean` themselves.
 
