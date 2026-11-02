@@ -33,6 +33,6 @@
 ## Left open, by choice
 - Placeholder Antogattva Foundation text on `/home` (English only).
 - Finance and Legal banner slots (the tabs exist but are empty).
-- `site_videos` table in the live database is unused; leave or drop.
-- Moving the remaining images to R2; `public/` is about 100 MB.
+- `site_videos` table in the live database is unused (one empty row). The landing page's six YouTube videos are the defaults in `src/lib/bannerStore.js`, overridable in Admin > Banners. Leave or drop the table.
+- Images still in `public/` (about 107 MB). Nothing must move; this is for repo size and CMS control. Best first: `veernxt_assets/` (20 MB of PNGs, the banner CMS defaults: convert to WebP, host on R2, point `bannerStore.js` at them like the landing page). Easy: `state_images/` (12 MB, code-referenced), `homepage/` and `finance/` (6 MB), the 6 PNGs in `thumbnails/` (also fix the missing `General Studies.png`). Need a database update because the DB stores the relative path: `category_banners/` (`lc_category_profiles.hero_image_url`, 19 rows), `thumbnails/` (`lc_subjects.thumbnail_url`, 28 rows), `category_thumbnails/` (`lc_exam_categories.thumbnail_url`, 187 rows). Book and exam covers and logos are already on R2.
 - Screenshots of the 73 routes (`SCREENSHOT_PLAN.md`); the graph is code-only (rebuild with `/graphify . --update`).
